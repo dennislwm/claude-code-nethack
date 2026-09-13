@@ -4,8 +4,16 @@ Usage: python3 turn_log.py "<keys sent>" "<./run output text>"
 """
 import collections
 import json
+import os
 import re
 import sys
+
+# Anchored to this file's location, not the caller's CWD -- a relative
+# "game_state/..." string silently resolves to nothing (FileNotFoundError,
+# caught) when this script is run from inside helper/ instead of the project
+# root, which happened repeatedly this session and looked like clean, low
+# data (empty counts, "turns on this level: 0") rather than a broken path.
+GAME_STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "game_state")
 
 STATUS_RE = re.compile(
     r"Dlvl:(\d+)\s+\$:(\d+)\s+HP:(-?\d+)\((\d+)\)\s+Pw:(-?\d+)\((\d+)\)\s+AC:(-?\d+)\s+Xp:(\d+)\s+T:(\d+)"
@@ -93,11 +101,13 @@ def parse_status(text: str) -> dict | None:
 
 
 def current_log_path() -> str:
+    pointer = os.path.join(GAME_STATE_DIR, ".current_turn_log")
     try:
-        with open("game_state/.current_turn_log") as f:
-            return f.read().strip()
+        with open(pointer) as f:
+            name = os.path.basename(f.read().strip())
     except FileNotFoundError:
-        return "game_state/turn_log.jsonl"
+        return os.path.join(GAME_STATE_DIR, "turn_log.jsonl")
+    return os.path.join(GAME_STATE_DIR, name)
 
 
 def log_turn(keys: str, output: str, log_path: str = None) -> dict | None:
@@ -117,6 +127,45 @@ def log_turn(keys: str, output: str, log_path: str = None) -> dict | None:
     with open(log_path, "a") as f:
         f.write(json.dumps(entry) + "\n")
     return entry
+
+
+def current_visit_t_range(dlvl=None):
+    """The (min_t, max_t) turn range of the CURRENT visit -- the log's
+    tail run of entries at `dlvl` (defaults to the last entry's level) --
+    exact, not a heuristic, since every entry already records which dlvl
+    it was on, so walking backward from the log's tail while dlvl matches
+    finds the current visit's start with no guessing. Only answers for
+    whatever level the log's last entry is on: pass a `dlvl` that doesn't
+    match the tail (a stale/historical level) and this returns None rather
+    than reaching past the current visit into an earlier one -- reaching
+    back further isn't the point, since the caller (frontier_scan's live
+    scan) only ever wants "this visit," not some prior one. Feeds
+    subgoal_breakdown's and search_counts' t_range param so a caller who
+    only knows "what dlvl am I on" (not the turn it started) can still
+    scope to just this visit, not conflate it with an earlier visit to the
+    same Dlvl:N number in a different branch. Returns None if the log is
+    empty or the tail isn't at `dlvl`."""
+    entries = []
+    try:
+        with open(current_log_path()) as f:
+            for line in f:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        return None
+    if not entries:
+        return None
+    if dlvl is None:
+        dlvl = entries[-1]["dlvl"]
+    ts = []
+    for e in reversed(entries):
+        if e.get("dlvl") != dlvl:
+            break
+        if "t" in e:
+            ts.append(e["t"])
+    return (min(ts), max(ts)) if ts else None
 
 
 def subgoal_breakdown(dlvl=None, t_range=None):
@@ -236,6 +285,31 @@ def _demo():
             globals()["current_log_path"] = real_path
     finally:
         os.remove(tmp_path)
+
+    # current_visit_t_range: dlvl 3 visited, left for dlvl 4, then came back
+    # to dlvl 3 -- must find only the LAST run's span, not the first one's.
+    fd, tmp_path = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(json.dumps({"dlvl": 3, "t": 100}) + "\n")
+            f.write(json.dumps({"dlvl": 3, "t": 105}) + "\n")
+            f.write(json.dumps({"dlvl": 4, "t": 150}) + "\n")
+            f.write(json.dumps({"dlvl": 3, "t": 900}) + "\n")
+            f.write(json.dumps({"dlvl": 3, "t": 905}) + "\n")
+        real_path = current_log_path
+        globals()["current_log_path"] = lambda: tmp_path
+        try:
+            assert current_visit_t_range() == (900, 905)  # defaults to tail's dlvl (3)
+            assert current_visit_t_range(dlvl=3) == (900, 905)
+            # dlvl=4 is a past visit, not the tail -- correctly None, not
+            # the earlier (150, 150) run; that's not "the current visit."
+            assert current_visit_t_range(dlvl=4) is None
+            assert current_visit_t_range(dlvl=9) is None  # never visited
+        finally:
+            globals()["current_log_path"] = real_path
+    finally:
+        os.remove(tmp_path)
     print("ok")
 
 
@@ -244,7 +318,9 @@ if __name__ == "__main__":
         _demo()
     elif sys.argv[1] == "--breakdown":
         dlvl = int(sys.argv[2]) if len(sys.argv) > 2 else None
-        counts = subgoal_breakdown(dlvl)
+        # Scope to this visit, not every visit ever logged to this Dlvl:N --
+        # the same number repeats across branches (Mines vs. main dungeon).
+        counts = subgoal_breakdown(dlvl, t_range=current_visit_t_range(dlvl))
         total = sum(counts.values())
         for subgoal, n in sorted(counts.items(), key=lambda kv: -kv[1]):
             print(f"{subgoal:20} {n:4}  {n / total:.0%}")

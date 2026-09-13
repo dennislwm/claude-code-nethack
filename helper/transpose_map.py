@@ -22,7 +22,9 @@ STATUS_MARKERS = ["Dlvl:", "HP:", "Pw:", "AC:", "Xp:", "St:"]
 # (whatis_coord's "none" is overridden to "map" for these submenus), so this
 # is a reliable position signal even when @ is invisible. Cached to a file
 # since each `./run` is a fresh process/capture with no shared memory.
-LAST_POS_FILE = Path("game_state/.last_pos")
+# Anchored to this file's location, not the caller's CWD -- see turn_log.py's
+# GAME_STATE_DIR for why a plain relative "game_state/..." silently breaks.
+LAST_POS_FILE = Path(__file__).resolve().parent.parent / "game_state" / ".last_pos"
 
 
 def is_status_line(line):

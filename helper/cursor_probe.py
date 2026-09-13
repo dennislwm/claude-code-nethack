@@ -431,11 +431,13 @@ def attempt_path(prefix, ext):
     any per-attempt state (frame cache, exhausted-search list, ...) so it
     resets on ./run --init exactly like the turn log does, instead of
     carrying stale data into a fresh game."""
+    pointer = os.path.join(tl.GAME_STATE_DIR, ".current_turn_log")
     try:
-        with open("game_state/.current_turn_log") as f:
-            return f"game_state/{prefix}{attempt_suffix(f.read().strip())}.{ext}"
+        with open(pointer) as f:
+            name = f"{prefix}{attempt_suffix(f.read().strip())}.{ext}"
     except FileNotFoundError:
-        return f"game_state/{prefix}.{ext}"
+        name = f"{prefix}.{ext}"
+    return os.path.join(tl.GAME_STATE_DIR, name)
 
 
 DLVL_RE = re.compile(r"Dlvl:(\d+)")
@@ -547,7 +549,48 @@ def coverage_band(frac):
     return "max"
 
 
-def render_html(map_lines, colors, title="", pos=None, prev_lines=None):
+def directional_coverage(map_lines):
+    """Same calculation as frontier_scan.directional_coverage, duplicated
+    here for the same import-direction reason as map_coverage above. Split
+    at the map's own fixed midpoint, not the player's position -- a
+    player-relative split gives each half a different-sized denominator (a
+    bucket right next to an edge is tiny and trivially ~100% seen), which
+    made a lopsided level near a wall misreport a real gap as "92% explored."
+
+    Each row is walked over its own real length, not padded out to the
+    widest row -- padding invents phantom blank cells past a row's actual
+    captured length, inflating every bucket's denominator far past
+    map_coverage's and desyncing the two (confirmed: 4189 padded cells vs.
+    913 real ones for the same capture).
+
+    Trailing all-blank rows are dropped before picking mid_r -- the tmux
+    pane is taller than NetHack's own ~21-row playfield, so the tail of
+    `map_lines` is dead terminal padding, not unexplored level; splitting
+    on the raw row count put the N/S boundary inside that padding, so the
+    S bucket read 0% regardless of what the level actually contained."""
+    rows = [r for r in map_lines if not tm.is_status_line(r)]
+    while rows and not rows[-1].strip():
+        rows.pop()
+    if not rows:
+        return {d: 0.0 for d in "NSEW"}
+    mid_r = len(rows) // 2
+    mid_c = max((len(r) for r in rows), default=0) // 2
+    seen = {"N": 0, "S": 0, "E": 0, "W": 0}
+    total = {"N": 0, "S": 0, "E": 0, "W": 0}
+    for r, row in enumerate(rows):
+        ns = "N" if r < mid_r else "S" if r > mid_r else None
+        for c, cell in enumerate(row):
+            ew = "W" if c < mid_c else "E" if c > mid_c else None
+            for d in (ns, ew):
+                if d is None:
+                    continue
+                total[d] += 1
+                if cell != " ":
+                    seen[d] += 1
+    return {d: (seen[d] / total[d] if total[d] else 0.0) for d in seen}
+
+
+def render_html(map_lines, colors, title="", pos=None, prev_lines=None, dlvl=None):
     """Static, self-refreshing HTML snapshot of the map, colored to match
     tmux's ANSI codes -- lets the game be watched in a browser tab instead
     of attaching a read-only tmux session. meta-refresh, not a JS poll:
@@ -569,8 +612,17 @@ def render_html(map_lines, colors, title="", pos=None, prev_lines=None):
     body = "\n".join(tm.squeeze_blanks(rows))
     neighborhood = neighborhood_html(map_lines, colors, *pos, prev_lines) if pos else ""
     pct = map_coverage(map_lines)
-    turns = sum(tl.subgoal_breakdown().values())
+    # Scoped to this visit, not every visit ever logged to this Dlvl:N --
+    # see frontier_scan.py's CLI for why (same conflation-across-branches
+    # bug, same fix).
+    t_range = tl.current_visit_t_range(dlvl) if dlvl is not None else None
+    turns = sum(tl.subgoal_breakdown(dlvl=dlvl, t_range=t_range).values())
     coverage = f"coverage: {pct:.0%} ({coverage_band(pct)}), turns on this level: {turns}"
+    if pos:
+        dc = directional_coverage(map_lines)
+        lowest = min(dc, key=dc.get)
+        by_dir = " ".join(f"{d}={dc[d]:.0%}" for d in ("N", "S", "E", "W"))
+        coverage += f"<br>by direction: {by_dir} -- least explored: {lowest}"
     return (
         "<!doctype html>\n<html>\n<head>\n"
         '<meta charset="utf-8">\n'
@@ -589,7 +641,7 @@ def render_html(map_lines, colors, title="", pos=None, prev_lines=None):
     )
 
 
-STABLE_VIEW_PATH = "game_state/game_view.html"
+STABLE_VIEW_PATH = os.path.join(tl.GAME_STATE_DIR, "game_view.html")
 
 
 def ensure_stable_view_link(target_path, link_path=STABLE_VIEW_PATH):
@@ -651,6 +703,7 @@ def main():
             map_area, parse_colors(pane),
             title=dlvl_match.group(0) if dlvl_match else "",
             pos=pos, prev_lines=prev_lines,
+            dlvl=int(dlvl_match.group(1)) if dlvl_match else None,
         ))
     ensure_stable_view_link(view_path)
 
@@ -743,6 +796,11 @@ def _demo():
     with_grid = render_html(["x" * 13] * 13, {}, pos=(6, 6), prev_lines=None)
     assert "frontier:" in with_grid
     assert with_grid.count("<pre") == 2  # map and neighborhood text as separate blocks
+    assert "by direction:" in with_grid
+    assert "least explored:" in with_grid
+
+    no_pos = render_html(["x" * 5] * 5, {})  # pos=None -- no directional line, no crash
+    assert "by direction:" not in no_pos
 
     grid_colors = {r: ["33"] * 13 for r in range(13)}
     colored_grid = render_html(["x" * 13] * 13, grid_colors, pos=(6, 6))

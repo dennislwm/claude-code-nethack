@@ -141,6 +141,17 @@ Why: see memory entries `nethack_navigation_travel` and `nethack_stuck_input_dia
    headed straight for an unrelated frontier instead. Check the drop
    (walk onto it and read "Things that are here", or explicitly decide to
    skip it) before the next move, not deferred to the room-exit checklist.
+
+   Any weapon or armor pickup is also an equip-decision moment, not just a
+   loot event — check it the same turn, not deferred. Compare against what's
+   currently wielded/worn (base damage die and weight for a weapon, AC and
+   weight for armor) and either wield/wear the upgrade (`w`/`W`) or explicitly
+   decide to keep the current gear (e.g. an enchanted weapon can beat an
+   unenchanted one with a better base die — enchantment isn't visible until
+   worn/wielded or identified, so this is a judgment call, not something to
+   compute and defer). Confirmed this session: a dwarvish spear was picked up
+   and logged, then never compared against the wielded +1 spear — it sat in
+   inventory unused for the rest of the level.
 7. **Using `_` (travel):**
    - Only confirm with `.` when the cursor's description line names an
      explored, reachable tile you actually intend to reach (not "unexplored
@@ -201,34 +212,52 @@ Given a target tile, use the cheapest rung that applies:
    game's own turn log) is sorted last, not removed — search is
    probabilistic, so a high count is a low-priority lead, never a
    zero-priority one; still worth a shot once other leads run out.
+   This count (and the `turns on this level:` line) is already scoped to
+   the *current* visit to the current Dlvl:N, not every visit ever logged
+   — Dlvl:N repeats across branches (e.g. once in the Mines, once in the
+   main dungeon), so an unscoped count would silently mix an earlier
+   branch's searches into this level's tally. No extra step needed; the
+   CLI does this automatically from the log itself.
+   The same run also prints `by direction: N=.. S=.. E=.. W=.. -- least
+   explored: X` — check this before treating a whole side of the map as
+   done, not just the nearest-tile list above (this session's stairs-down
+   miss, see rung 6's loop-vs-dead-end note, sat behind exactly the
+   direction this line would have flagged).
 6. **No travel path at all, even to a nearby tile** (fully walled off) —
-   search for hidden passages before manual walking further. A boulder
-   blocking the route is a different obstacle, not rock. "In vain" means
-   the tile the boulder would land ON is blocked (wall, monster, another
-   boulder/item, or unplugged water/lava) — not that the direction itself
-   is bad. The same direction can push it successfully several times in a
-   row, then suddenly fail once it rolls into a tile with an obstruction
-   ahead — that's the boulder hitting new terrain each push, not a
-   direction going stale. Pushing from a different angle costs nothing
-   and is worth trying before reaching for an item; only give up on
-   pushing once every open direction has been tried and each says "in
-   vain," not after one.
+   is this really a dead end, or just where I stopped looking? Search for
+   hidden passages before manual walking further.
+   A corridor that seems to loop back into already-known territory is a
+   different question than a wall — has it actually been walked to its
+   real end, or dismissed as "just a loop" partway through? Confirmed this
+   session: a branch judged as looping back turned out to lead straight to
+   the level's stairs down a few tiles past the point where it was given
+   up on — "loops back" and "dead end" aren't the same conclusion until
+   the branch is walked all the way.
+   A boulder blocking the route is a different obstacle, not rock. "In
+   vain" means the tile the boulder would land ON is blocked (wall,
+   monster, another boulder/item, or unplugged water/lava) — not that the
+   direction itself is bad; the same direction can push it successfully
+   several times in a row, then suddenly fail once it rolls into a tile
+   with an obstruction ahead, which is new terrain showing up, not the
+   direction going stale. Has it actually been pushed from every open
+   angle, or does one failure read as the route being blocked?
    Weapons never work on a boulder, melee or thrown — it isn't a monster,
-   there's no attack prompt. If pushing is fully exhausted, check
-   inventory for an item before giving up on the route: a wand, engrave
-   with it (`E` + its letter) first to check charges — "too worn out to
-   engrave" means empty, no need to waste a real zap finding that out — a
-   working wand of striking or teleportation reliably clears it (striking
-   shatters it, teleportation moves it elsewhere like any item), and
-   polymorph is worth a try but only sometimes destroys/transforms it;
-   wand of digging does *not* work on boulders despite digging through
-   rock generally, don't waste a charge testing that. A pick-axe (or
-   dwarvish mattock): `w` to wield it first (merely carrying one doesn't
-   trigger a dig prompt), then `a` + its letter + the boulder's direction
-   — shatters it into rocks (sometimes a gem). A stone-to-flesh spell
-   also works, turning it into a movable chunk of meat. None available:
-   treat the route as blocked for now and go around, the same as rung 6's
-   rock case.
+   there's no attack prompt. If pushing is genuinely exhausted from every
+   angle, check inventory for an item before giving up on the route: a
+   wand, engrave with it (`E` + its letter) first to check charges — "too
+   worn out to engrave" means empty, no need to waste a real zap finding
+   that out — a working wand of striking or teleportation reliably clears
+   it (striking shatters it, teleportation moves it elsewhere like any
+   item), and polymorph is worth a try but only sometimes
+   destroys/transforms it; wand of digging does *not* work on boulders
+   despite digging through rock generally, don't waste a charge testing
+   that. A pick-axe (or dwarvish mattock): `w` to wield it first (merely
+   carrying one doesn't trigger a dig prompt), then `a` + its letter + the
+   boulder's direction — shatters it into rocks (sometimes a gem). A
+   stone-to-flesh spell also works, turning it into a movable chunk of
+   meat. None available: treat the route as blocked for now and go
+   around — but is "for now" still true, or was that decided before the
+   last unwalked branch got checked?
 
 ## Threat ladder (any monster encounter or HP-risk moment)
 
@@ -239,12 +268,31 @@ Read top to bottom — stop at the first rung that applies.
    into it prompts an attack-confirmation; accepting costs alignment/god
    favor for no benefit). Route around it instead (diagonal or alternate
    direction).
-2. **Treat heavy hitters as a flee-threshold, not a trade-blows target.**
-   Rothes deal 3 attacks/turn, 10-20+ damage per exchange — far more than
-   gnomes/dwarves/gnomish wizards. Anything hitting double-digit damage per
-   turn: disengage well above 50% HP, not after already critical. Don't
-   assume safety from species name alone — a kitten once hit for 3-5
-   repeatedly and crashed HP 14->9 in a single 3-turn batch.
+2. **Treat heavy hitters and stealers as special-handling targets, not a
+   trade-blows-in-melee default.** Two distinct dangers, same rule because
+   both call for the same fix (range, not proximity):
+   - *Heavy hitters* (damage risk): rothes deal 3 attacks/turn, 10-20+
+     damage per exchange — far more than gnomes/dwarves/gnomish wizards.
+     Anything hitting double-digit damage per turn: disengage well above
+     50% HP, not after already critical. Don't assume safety from species
+     name alone — a kitten once hit for 3-5 repeatedly and crashed HP
+     14->9 in a single 3-turn batch.
+   - *Stealers* (permanent-loss risk, not damage): nymphs (`n`) steal a
+     carried item and teleport away on a successful hit against you;
+     leprechauns (`l`) do the same with gold. The theft triggers on any
+     successful hit against you, so proximity itself is the risk. Low HP
+     threat, high item-loss threat: worth killing from range
+     or simply avoiding rather than trading blows to "just kill it quick."
+   While either type is still in line of sight and not yet adjacent, fire
+   on it (`f`, quivered ammo, launcher wielded) or throw (`t`) before
+   closing to melee — a wielded launcher sitting in inventory doesn't help
+   if the fight is already hand-to-hand by the time it's remembered.
+   Confirmed this session: a rothe (explicitly a heavy hitter per this same
+   rule) was walked straight into melee with a bow, arrows, a crossbow,
+   bolts, a sling, and throwable daggers all in inventory the whole time —
+   none were used. This isn't "always shoot before melee" for every
+   monster (wastes ammo and turns against anything trivial); it's specific
+   to these two flagged cases.
 3. **Never batch multiple turns once a hostile is adjacent, known alive
    nearby, or has attacked this exchange.** This is the rule that actually
    got Claude killed (Dlvl:2, T:448: a 20-keypress force-search batch while
@@ -287,6 +335,33 @@ session: doing that led to a real, avoidable descend — the checklist's
 `adjacent_unexplored`, that a bare `coverage: 46%` reading gave no visibility
 into at all).
 
+Next — this is a checkpoint for the level about to be left, not something
+to redo per room, and it belongs here, before the decision below, not
+after it: a mandatory step placed after the decision paragraph reliably
+gets skipped once the decision is already reached (confirmed this session:
+the checklist and the weigh-cost judgment below were both done, "descend"
+was decided, and this step never ran at all). Run
+`python3 helper/turn_log.py --breakdown` (defaults to the current level) and check
+**every** subgoal it prints, not just whichever one was debt last time —
+which subgoal is actually a problem varies level to level (a maze-like
+level might rack up search-debt instead of the protocol_violation/travel
+pattern seen on Dlvl:1). The CLI ranks by raw count, not by "debt-ness" —
+a small count can still be 100% waste. Read each line against its
+direction:
+
+| subgoal | debt direction |
+|---|---|
+| `protocol_violation` | high = bad, always (pure overhead, see step 7's `_` note on when a standalone `Space` is unavoidable vs. not) |
+| `travel` | near-0 = bad *if* the level had long explored corridors (reverse debt, see step 7's last bullet) — near-0 on a tiny level is fine |
+| `other` | high = a `classify()` gap, not player debt — means something is silently uncategorized again, worth a code fix, not a play-habit fix |
+| `search`, `combat`, `loot`, `explore`, `movement` | context-dependent — no fixed direction; judge against what the level actually contained (e.g. high `search`% on a level with few hidden doors found is debt, the same % after cracking open three vaults isn't) |
+
+The level is already fully explored by this point — you can't go back and
+fix its turns. The only output that matters is: carry one concrete
+adjustment into the next level, not a retrospective on this one. Skip this
+entirely if the level was a quick pass-through with too few turns to be
+meaningful.
+
 With the checklist's actual findings in hand, then weigh cost:
 - A concrete lead from the checklist (an `all_doors`-flagged
   `adjacent_unexplored` door, a `frontier: ... (closed door)`, a `new:` not
@@ -310,29 +385,22 @@ With the checklist's actual findings in hand, then weigh cost:
   that's a reason to descend below `max`; if turns-on-level is still low,
   low coverage is just "haven't looked yet," not debt.
 
-Then, once, right before pressing `>` —
-this is a checkpoint for the level about to be left, not something to redo
-per room. Run
-`python3 helper/turn_log.py --breakdown` (defaults to the current level) and check
-**every** subgoal it prints, not just whichever one was debt last time —
-which subgoal is actually a problem varies level to level (a maze-like
-level might rack up search-debt instead of the protocol_violation/travel
-pattern seen on Dlvl:1). The CLI ranks by raw count, not by "debt-ness" —
-a small count can still be 100% waste. Read each line against its
-direction:
+Before actually pressing `>`, chain 5 whys from "why descend now" down to a
+concrete fact from the checklist/retrospective above, not a feeling —
+each answer should cite a number or a named finding, not "seems done."
+Example chain: why descend? standing on `>`. why is that enough? coverage
+is in the `high`/`max` band. why not push the remaining gap? the frontier
+tiles flagging it are already searched past the 10x exhaustion bar. why
+trust those are dead ends? the same search method already found real
+hidden doors elsewhere this level, so it isn't failing to find things.
+why stop rather than search more? turns already sunk here are large and
+climbing coverage slowly, per the turns-vs-coverage tradeoff above. If the
+chain bottoms out on an assumption instead of a fact ("probably nothing
+left," "should be fine") — that's the checklist not actually being clean;
+go finish it before deciding, not after.
 
-| subgoal | debt direction |
-|---|---|
-| `protocol_violation` | high = bad, always (pure overhead, see step 7's `_` note on when a standalone `Space` is unavoidable vs. not) |
-| `travel` | near-0 = bad *if* the level had long explored corridors (reverse debt, see step 7's last bullet) — near-0 on a tiny level is fine |
-| `other` | high = a `classify()` gap, not player debt — means something is silently uncategorized again, worth a code fix, not a play-habit fix |
-| `search`, `combat`, `loot`, `explore`, `movement` | context-dependent — no fixed direction; judge against what the level actually contained (e.g. high `search`% on a level with few hidden doors found is debt, the same % after cracking open three vaults isn't) |
-
-The level is already fully explored by this point — you can't go back and
-fix its turns. The only output that matters is: carry one concrete
-adjustment into the next level, not a retrospective on this one. Skip this
-entirely if the level was a quick pass-through with too few turns to be
-meaningful.
+Only once the retrospective above has actually run and the checklist is
+clean does pressing `>` follow — not before either one.
 
 ## After descending (arriving on a new level)
 

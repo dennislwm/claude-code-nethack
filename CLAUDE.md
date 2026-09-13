@@ -51,6 +51,13 @@ movement keys until you close it with `Space` or `Escape`.
   monster is in view (including your own pet), repeating `s` stops early
   with "You already found a monster. Use 'm' prefix to force another
   search." — prefix each repeat with `m` (e.g. `m s`) to force it anyway.
+  **The `m` prefix means "force it anyway," not "safe to batch anyway"** —
+  a batched `m s m s m s...` while a hostile is adjacent is exactly the
+  batch the nethack-navigation skill's threat-ladder rule 3 forbids (it's
+  cost Claude real HP more than once, since a room-search habit built up
+  over many monster-free searches doesn't self-interrupt when one finally
+  shows up in the same neighborhood grid). Check `/,m` first if anything
+  is visible before sending a forced-search batch.
 - `,` — pick up item
 - `e` — eat (prompts for what; use this for corpses, not `,` which only
   picks the item up)
