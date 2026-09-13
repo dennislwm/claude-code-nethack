@@ -334,6 +334,19 @@ adjustment into the next level, not a retrospective on this one. Skip this
 entirely if the level was a quick pass-through with too few turns to be
 meaningful.
 
+## After descending (arriving on a new level)
+
+The pre-descent checklist governs the level you just left; it says nothing
+about the one you just landed on. Right after arriving — before the first
+exploration move — check `^X` and read the "You are in/on ..." line: it's
+the only way to tell the Gnomish Mines from the Dungeons of Doom, since the
+status bar's `Dlvl:N` reads identically in both (see "No stairs down
+anywhere on this level" below for why this matters mid-Mines-climb too).
+Confirmed this session: two Mines levels in a row got explored for a
+"second staircase down" before `^X` was checked, because the previous
+level's `>` not being a `branch staircase down` was wrongly treated as
+proof the new level itself must be main dungeon.
+
 ## No stairs down anywhere on this level (fully explored)
 
 This is a level/branch problem, not a tile-reaching problem — the ladder
@@ -348,3 +361,10 @@ not a sign of missed exploration. Before concluding a level is a dead end:
    staircases, one continuing the main dungeon and one branching into the
    Mines. Take the other staircase to keep progressing instead of treating
    a Mines dead end as a reason to stop or resign.
+   The status bar's `Dlvl:N` reads identically in both branches — it
+   cannot tell you which one you're on. After each climb, check `^X`
+   ("You are in the Gnomish Mines, on level N" vs "You are on level N
+   of the Dungeons of Doom") before assuming that level is the branch
+   point — confirmed this session: a level one climb above a Mines
+   dead end was still Mines, not yet the branch, and got explored for a
+   nonexistent second staircase before `^X` caught it.

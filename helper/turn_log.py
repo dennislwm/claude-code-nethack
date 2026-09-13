@@ -20,6 +20,7 @@ COMMAND_SUBGOAL = {
     ",": "loot", "/": "loot",
     "o": "explore", "C-d": "explore", "#terrain": "explore", "#terrain a": "explore",
     "#pray": "combat",
+    "<": "movement", ">": "movement",
 }
 
 MOVE_KEYS = set("hjklyubn")
@@ -42,17 +43,31 @@ def classify(message: str, keys: str) -> str:
         if substr in message:
             return msg_goal
     tokens = keys.split()
+    # A leading "Space" only dismisses a pending --More--; it isn't itself
+    # an action, so it shouldn't disqualify an otherwise-uniform batch from
+    # the token checks below (confirmed this session: "Space l l l" fell to
+    # "other" even though it's 3 real movement keys plus a dismissal).
+    body = tokens[1:] if tokens[:1] == ["Space"] else tokens
     # A repeated forced-search batch ("m s m s m s...") never equals the
     # dict's literal "m s" key, no matter how many repeats -- root cause is
     # the exact-match lookup, not the specific string, so check by token.
-    if tokens and all(t in ("s", "m") for t in tokens):
+    if body and all(t in ("s", "m") for t in body):
         return "search"
     # Same token-based reasoning as the search check above: a batched move
     # ("l l l") never equals a COMMAND_SUBGOAL dict key either, so it fell
     # into "other" -- which turned out to be 84% of a real game's log,
     # almost entirely bare hjklyubn movement, not truly unclassifiable turns.
-    if tokens and all(len(t) == 1 and t in MOVE_KEYS for t in tokens):
+    if body and all(len(t) == 1 and t in MOVE_KEYS for t in body):
         return "movement"
+    # A rest batch ("." "." ".") is the same story again -- only the exact
+    # single "." matches the dict.
+    if body and all(t == "." for t in body):
+        return "rest"
+    # "_ < ." / "_ > ." (open travel, jump to a symbol, confirm) never
+    # equals the dict's bare "_" key either; any keys starting the travel
+    # prompt are the same subgoal regardless of how it's steered/confirmed.
+    if tokens[:1] == ["_"]:
+        return "travel"
     return COMMAND_SUBGOAL.get(keys, "other")
 
 
@@ -104,11 +119,18 @@ def log_turn(keys: str, output: str, log_path: str = None) -> dict | None:
     return entry
 
 
-def subgoal_breakdown(dlvl=None):
+def subgoal_breakdown(dlvl=None, t_range=None):
     """Count this game's turn_log entries by subgoal, filtered to one
     dungeon level -- defaults to whatever level the most recent entry is
     on, so a plain call answers "what have I been doing on the level I'm
-    currently on" without the caller having to know the number."""
+    currently on" without the caller having to know the number.
+
+    The log has no dungeon-branch field -- Dlvl:N repeats across branches
+    (e.g. Dlvl:3 exists once in the Mines and once in the main dungeon),
+    so a bare dlvl filter conflates both visits if a game entered a branch
+    and came back. Pass t_range=(start, end) (each `T:` inclusive) to scope
+    to one visit's actual turn span instead -- every entry already carries
+    `t`, so no schema change is needed for this."""
     entries = []
     try:
         with open(current_log_path()) as f:
@@ -121,7 +143,11 @@ def subgoal_breakdown(dlvl=None):
         return {}
     if dlvl is None and entries:
         dlvl = entries[-1]["dlvl"]
-    return dict(collections.Counter(e["subgoal"] for e in entries if e.get("dlvl") == dlvl))
+    matches = (e for e in entries if e.get("dlvl") == dlvl)
+    if t_range is not None:
+        lo, hi = t_range
+        matches = (e for e in matches if lo <= e.get("t", -1) <= hi)
+    return dict(collections.Counter(e["subgoal"] for e in matches))
 
 
 def _demo():
@@ -146,6 +172,16 @@ def _demo():
     assert classify("", "m s m s m s") == "search"
     assert classify("", "l") == "movement"
     assert classify("", "l l l") == "movement"
+    assert classify("", "Space l l l") == "movement"
+    assert classify("", "Space h h h h h h") == "movement"
+    assert classify("", "Space m s m s") == "search"
+    assert classify("", ". . .") == "rest"
+    assert classify("", ". .") == "rest"
+    assert classify("", "_ < .") == "travel"
+    assert classify("", "_ > .") == "travel"
+    assert classify("", "<") == "movement"
+    assert classify("", ">") == "movement"
+    assert classify("", "Space") == "protocol_violation"  # a lone Space is unaffected by the strip
     assert classify("", "#terrain a") == "explore"
     assert classify("The jackal bites!", "l") == "combat"  # message wins over bare-move keys
     assert classify("You walk quietly.", "y") == "movement"
@@ -176,6 +212,26 @@ def _demo():
         try:
             assert subgoal_breakdown(dlvl=1) == {"movement": 2, "search": 1}
             assert subgoal_breakdown() == {"movement": 1}  # defaults to last entry's level (2)
+        finally:
+            globals()["current_log_path"] = real_path
+    finally:
+        os.remove(tmp_path)
+
+    # Same Dlvl:N visited twice (e.g. Mines then main dungeon) -- t_range
+    # scopes to one visit instead of conflating both.
+    fd, tmp_path = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(json.dumps({"dlvl": 3, "t": 100, "subgoal": "combat"}) + "\n")
+            f.write(json.dumps({"dlvl": 3, "t": 105, "subgoal": "combat"}) + "\n")
+            f.write(json.dumps({"dlvl": 3, "t": 900, "subgoal": "loot"}) + "\n")
+        real_path = current_log_path
+        globals()["current_log_path"] = lambda: tmp_path
+        try:
+            assert subgoal_breakdown(dlvl=3) == {"combat": 2, "loot": 1}
+            assert subgoal_breakdown(dlvl=3, t_range=(0, 200)) == {"combat": 2}
+            assert subgoal_breakdown(dlvl=3, t_range=(800, 1000)) == {"loot": 1}
         finally:
             globals()["current_log_path"] = real_path
     finally:

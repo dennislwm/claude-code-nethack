@@ -74,6 +74,19 @@ movement keys until you close it with `Space` or `Escape`.
 - `t` — throw any item by hand (prompts for item, then direction)
 - `#adjust` + count + letter — split a stack into a new slot (e.g. to
   light/use only one item, not the whole stack)
+- `_` — travel: opens a cursor, steer it with movement keys or a map
+  symbol, confirm the destination with `.` (or cancel with `Space`/`Escape`)
+- `#terrain` + `a` — show all known terrain on the level (strips
+  objects/monsters), e.g. `./run '#terrain' a`
+
+**Both `_` and `#terrain` leave the game in a cursor/modal state that
+intercepts the *next* command if not explicitly closed first.** Confirmed
+this session: sending plain movement keys (`h`, `j`, ...) right after one of
+these moved an invisible cursor instead of the player — the printed map and
+position looked plausible, but `T:` (turn count) stayed frozen, the only
+tell. Always follow `_`/`#terrain` with an explicit `.` (confirm) or
+`Space`/`Escape` (cancel) before sending any other command, and if a batch
+of moves ever shows an unchanged `T:`, suspect this first.
 
 ### The `/` (Look) Command
 Use `./run '/' <option>` to query the map. Options:
