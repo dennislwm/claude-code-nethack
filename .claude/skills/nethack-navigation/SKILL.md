@@ -152,6 +152,14 @@ Why: see memory entries `nethack_navigation_travel` and `nethack_stuck_input_dia
    compute and defer). Confirmed this session: a dwarvish spear was picked up
    and logged, then never compared against the wielded +1 spear — it sat in
    inventory unused for the rest of the level.
+
+   A container (chest/box, `(`) is looted where it lies — `#loot` (or
+   `#force` if locked) works on the ground, no pickup needed. Confirmed
+   this session: picking one up first caused encumbrance (Stressed status,
+   movement difficulty) requiring a drop before `#loot` would even engage —
+   two wasted actions. `#force` has a chance to destroy the chest and its
+   contents (a jar shattered this session); worth it only when nothing
+   else can open it (no key) and the risk is acceptable.
 7. **Using `_` (travel):**
    - Only confirm with `.` when the cursor's description line names an
      explored, reachable tile you actually intend to reach (not "unexplored

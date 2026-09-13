@@ -73,7 +73,17 @@ movement keys until you close it with `Space` or `Escape`.
   automatically before your keys whenever you pass at least one argument
   (a no-op when nothing's pending) — **don't send it yourself**, chained or
   standalone; a call whose only argument is `Space` no longer does
-  anything a plain next action wouldn't already do for free
+  anything a plain next action wouldn't already do for free.
+  **This auto-`Space` is only a safe no-op before `--More--`/text-panel
+  prompts, never before a `[yn]` confirmation** — a `[yn]` prompt treats
+  `Space` as an actual answer (accepting the shown default, not ignoring
+  it), so it silently resolves the prompt before your real key arrives.
+  Confirmed this session: `./run S` then a separate `./run y` moved the
+  player instead of confirming the save, because the second call's
+  auto-`Space` had already answered "n" to "Really save? [yn] (n)". Any
+  action that opens a `[yn]` prompt (`S`, `#force`, some `#loot`/kick
+  flows) must send its answer in the **same** `./run` call as the
+  triggering key (e.g. `./run S y`), never a follow-up call.
 - `Escape` — cancel a command (fails with "client is read-only" if a
   read-only tmux viewer is attached — use the next real action instead,
   which dismisses via the automatic `Space` above)
@@ -126,6 +136,10 @@ Use this regularly for situational awareness instead of building custom tools.
 - `)` — weapon
 - `[` — armor
 - `%` — corpse / food
+- `{` — fountain/sink/boulder (context glyph, not an item — walking onto one
+  and trying `,` prompts "You could drink the water..." instead of a pickup;
+  `#dip` a weapon here for a lawful Valkyrie's long-sword-to-Excalibur
+  chance, `#quaff`/dip-self is high-risk and mostly skipped)
 
 ## Gameplay Knowledge
 
