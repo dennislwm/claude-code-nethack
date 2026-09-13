@@ -22,7 +22,7 @@ NetHack is a classic roguelike dungeon crawler that requires strategic thinking,
   - Captures clean ASCII output without escape sequences
   - Appends a neighborhood-of-@ view after the original output
   - Supports session cleanup and initialization
-- **`transpose_map.py`** - Screen formatting tool for improved spatial awareness
+- **`helper/transpose_map.py`** - Screen formatting tool for improved spatial awareness
   - Extracts the map region from NetHack screen output
   - Prints a 5x5 grid and labeled adjacent-cell summary around `@`
 

@@ -3,18 +3,26 @@
 
 Processes raw tmux capture output into:
 1. Map area (left 80 columns) with blank lines squeezed
-2. Neighborhood of @ (5x5 grid + labeled 3x3)
+2. Neighborhood of @ (9x9 grid + labeled 3x3)
 3. Overlay text (inventory, menus from right of column 80)
 """
 
 import re
 import sys
+from pathlib import Path
 
 MAP_WIDTH = 80
 
 GAP_RE = re.compile(r" {2,}")
+NEAR_COORD_RE = re.compile(r"near <(\d+),(\d+)>")
 
-STATUS_MARKERS = ["Dlvl:", "HP:", "Pw:", "AC:", "Xp:"]
+STATUS_MARKERS = ["Dlvl:", "HP:", "Pw:", "AC:", "Xp:", "St:"]
+
+# ponytail: /,m and /,o always print "near <x,y>" with real coordinates
+# (whatis_coord's "none" is overridden to "map" for these submenus), so this
+# is a reliable position signal even when @ is invisible. Cached to a file
+# since each `./run` is a fresh process/capture with no shared memory.
+LAST_POS_FILE = Path("game_state/.last_pos")
 
 
 def is_status_line(line):
@@ -100,21 +108,28 @@ def find_player(map_lines):
 
 
 def cell_at(map_lines, r, c):
-    """Get the character at (r, c), or space if out of bounds."""
-    if 0 <= r < len(map_lines) and 0 <= c < len(map_lines[r]):
+    """Get the character at (r, c), or space if out of bounds or if row r is
+    a status-bar line ("Dlvl:...", "St:..."). Every terrain-passability
+    check (is_passable, nearest_frontier, edge_paths, find_frontiers...)
+    reads through this one function, so masking status text here -- instead
+    of in each caller -- stops it being misread as passable terrain
+    whenever the player is near the bottom of the screen (confirmed: status
+    characters like 'C'/'o'/'1' leaked into the neighborhood grid and into
+    frontier_scan's results)."""
+    if 0 <= r < len(map_lines) and 0 <= c < len(map_lines[r]) and not is_status_line(map_lines[r]):
         return map_lines[r][c]
     return " "
 
 
 def print_neighborhood(map_lines):
-    """Print a 5x5 grid around @ and label the 8 adjacent cells."""
+    """Print a 9x9 grid around @ and label the 8 adjacent cells."""
     pos = find_player(map_lines)
     if pos is None:
         return
     pr, pc = pos
     print("--- Neighborhood of @ ---")
-    for dr in range(-2, 3):
-        cells = " ".join(cell_at(map_lines, pr + dr, pc + dc) for dc in range(-2, 3))
+    for dr in range(-4, 5):
+        cells = " ".join(cell_at(map_lines, pr + dr, pc + dc) for dc in range(-4, 5))
         if dr == 0:
             print(f"W {cells} E")
         else:
@@ -127,18 +142,40 @@ def print_neighborhood(map_lines):
     print(" ".join(f"{d}={cell_at(map_lines, pr+dr, pc+dc)}" for d, dr, dc in labels))
 
 
+def update_last_pos(raw_lines):
+    """Cache the most recent "near <x,y>" coordinate seen, if any."""
+    for line in raw_lines:
+        m = NEAR_COORD_RE.search(line)
+        if m:
+            LAST_POS_FILE.parent.mkdir(exist_ok=True)
+            LAST_POS_FILE.write_text(m.group(0))
+
+
+def read_last_pos():
+    """Return a cached "near <x,y>" string, or None."""
+    if LAST_POS_FILE.exists():
+        return LAST_POS_FILE.read_text().strip()
+    return None
+
+
 def main():
     raw_lines = sys.stdin.read().splitlines()
     map_area, overlay = split_output(raw_lines)
+    update_last_pos(raw_lines)
 
     # 1. Print map area with squeezed blank lines
     for line in squeeze_blanks(map_area):
         print(line)
 
-    # 2. Neighborhood (only when @ is visible)
+    # 2. Neighborhood (only when @ is visible); fall back to the last known
+    # coordinate (e.g. while invisible) instead of going silent.
     extracted = extract_map(map_area)
     if extracted and find_player(extracted):
         print_neighborhood(extracted)
+    else:
+        last_pos = read_last_pos()
+        if last_pos:
+            print(f"--- @ not visible (invisible?) — last known position {last_pos} ---")
 
     # 3. Overlay text (inventory, menus, etc.)
     if overlay:

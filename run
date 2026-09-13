@@ -10,7 +10,7 @@ SESSION_NAME="claude-nethack"
 # viewer with a different terminal width attaches.
 SESSION_WIDTH=154
 SESSION_HEIGHT=60
-NETHACK_OPTIONS_ENV="NETHACKOPTIONS=whatis_coord:m"
+NETHACK_OPTIONS_ENV="NETHACKOPTIONS=whatis_coord:m,time"
 NETHACK_COMMAND="nethack -u Claude -p valkyrie -r human"
 KEY_DELAY=0.3
 
@@ -99,6 +99,12 @@ fi
 if [ "$1" = "--init" ]; then
     tmux kill-session -t "$SESSION_NAME" 2>/dev/null
     sleep 0.2
+    # Name this game's turn log by attempt number (zero-padded so filenames
+    # sort correctly past 9 attempts) and record it as the active log so
+    # turn_log.py doesn't need the path passed in on every call.
+    mkdir -p game_state
+    attempt=$(( $(ls game_state/turn_log_*.jsonl 2>/dev/null | wc -l) + 1 ))
+    echo "game_state/turn_log_$(printf '%03d' "$attempt").jsonl" > game_state/.current_turn_log
     # Without this shift, "--init" stays in "$@" and falls through to the
     # action loop below, which sends it as literal keystrokes to the fresh
     # session: '-' '-' 'i' 'n' 'i' 't'. On the role-selection menu, 't'
@@ -140,4 +146,8 @@ sleep 0.2
 
 # Capture the pane's content and format it for LLM consumption.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-tmux capture-pane -p -t "$SESSION_NAME" | python3 "$SCRIPT_DIR/transpose_map.py"
+OUTPUT=$(tmux capture-pane -p -t "$SESSION_NAME" | python3 "$SCRIPT_DIR/helper/cursor_probe.py" "$SESSION_NAME")
+echo "$OUTPUT"
+# Auto-log this turn (skips no-op/invalid calls itself, see turn_log.py).
+# Silenced: a logging failure must never surface as a game-state error.
+python3 "$SCRIPT_DIR/helper/turn_log.py" "$*" "$OUTPUT" > /dev/null 2>&1
