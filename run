@@ -126,6 +126,21 @@ fi
 
 # --- Action and State Capture ---
 
+# A pending --More--/text-panel dismissal was previously left to the caller
+# to remember (send a leading "Space" before the real keys) -- it's a
+# harmless no-op when nothing is pending, so making it code instead of
+# behavior removes the whole failure mode: caller no longer has to remember
+# it at all, and can never forget it. Confirmed this session: standalone
+# "Space" calls (the caller dismissing, then sending the real action in a
+# separate call because it forgot to chain the two) made up 14% of one
+# level's logged turns. Only applies when there's a real action to send --
+# a bare `./run` (no args) is a pure state-view call and must not itself
+# consume a turn.
+if [ "$#" -gt 0 ]; then
+    send_input Space
+    sleep "$KEY_DELAY"
+fi
+
 # Loop through each argument provided to the script.
 # This allows us to send them one by one with a delay in between.
 for arg in "$@"; do

@@ -110,6 +110,20 @@ def current_log_path() -> str:
     return os.path.join(GAME_STATE_DIR, name)
 
 
+def _last_entry(log_path):
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return None
+    for line in reversed(lines):
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def log_turn(keys: str, output: str, log_path: str = None) -> dict | None:
     if not keys or "Unknown command" in output:
         return None
@@ -120,6 +134,29 @@ def log_turn(keys: str, output: str, log_path: str = None) -> dict | None:
         return None
     entry["keys"] = keys
     entry["subgoal"] = classify(output, keys)
+    # A movement batch that didn't advance T: (a wall/dead-end bump) sent a
+    # real tool call for zero game progress -- the same overhead category as
+    # a standalone Space, just discovered by comparing to the last entry
+    # instead of the keys alone. Only checked for "movement": search always
+    # consumes a turn even when it finds nothing, so this can't false-flag
+    # there, and a partially-successful batch (2 of 4 keys land) isn't
+    # detectable this way -- the log only has the net position after the
+    # whole call, not per-keystroke, so this only catches a fully wasted call.
+    if entry["subgoal"] == "movement":
+        last = _last_entry(log_path)
+        if last is not None and last.get("t") == entry.get("t"):
+            entry["subgoal"] = "protocol_violation"
+        # A 3+ key manual batch that revealed nothing new is exactly the
+        # case the skill's own travel rule already names: "3+ manual
+        # movement keys through ground already on the map, stop and use
+        # `_` instead." Cheap by construction -- new_coords is already
+        # parsed for every entry, no extra lookback needed. Not exact (a
+        # batch could reveal one new tile at the very end despite mostly
+        # retreading known ground, or walk into a genuinely new but
+        # already-lit room and dodge the flag), but it's the same signal
+        # the rule itself already uses, not a new invented threshold.
+        elif len(keys.split()) >= 3 and "new_coords" not in entry:
+            entry["subgoal"] = "protocol_violation"
     if entry["subgoal"] == "search":
         entry["search_count"] = keys.split().count("s")
     if entry["hp"] <= 0:
@@ -244,6 +281,46 @@ def _demo():
         assert entry["subgoal"] == "protocol_violation"
         entry = log_turn("m s m s m s", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:2", tmp_path)
         assert entry["subgoal"] == "search" and entry["search_count"] == 3
+    finally:
+        os.remove(tmp_path)
+
+    # A movement batch that bumps into a wall (T: unchanged from the last
+    # logged entry) is reclassified as protocol_violation -- a real tool
+    # call spent for zero game progress, same overhead category as a
+    # standalone Space. Search must NOT get the same treatment: it always
+    # consumes a turn even when it finds nothing, so T: unchanged there
+    # would be a bug elsewhere, not a legitimate case to special-case here.
+    fd, tmp_path = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    try:
+        log_turn("l", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:5\npos: 3,4", tmp_path)
+        entry = log_turn("l l", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:5\npos: 3,4", tmp_path)
+        assert entry["subgoal"] == "protocol_violation"  # T: didn't advance -- wall bump
+        entry = log_turn("l", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:6\npos: 3,5", tmp_path)
+        assert entry["subgoal"] == "movement"  # T: advanced -- a real move, not flagged
+        entry = log_turn("m s", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:6", tmp_path)
+        assert entry["subgoal"] == "search"  # search stays search even if T: repeats
+    finally:
+        os.remove(tmp_path)
+
+    # A 3+ key manual movement batch that reveals nothing new should have
+    # used travel (`_`) instead -- SKILL.md's own step 7 rule, now enforced
+    # in the log too. A batch that DOES reveal something new is real
+    # exploration, not flagged; neither is a short (<3 key) batch, since
+    # travel isn't worth the overhead for 1-2 steps.
+    fd, tmp_path = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    try:
+        entry = log_turn("l l l", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:5\npos: 3,7", tmp_path)
+        assert entry["subgoal"] == "protocol_violation"  # 3+ keys, nothing new revealed
+        entry = log_turn(
+            "l l l",
+            "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:8\npos: 3,10\nnew_coords: 2,11",
+            tmp_path,
+        )
+        assert entry["subgoal"] == "movement"  # revealed something new -- real exploration
+        entry = log_turn("l l", "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1 T:10\npos: 3,12", tmp_path)
+        assert entry["subgoal"] == "movement"  # only 2 keys -- too short to bother with travel
     finally:
         os.remove(tmp_path)
 

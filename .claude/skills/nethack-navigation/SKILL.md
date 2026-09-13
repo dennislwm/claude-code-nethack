@@ -351,7 +351,7 @@ direction:
 
 | subgoal | debt direction |
 |---|---|
-| `protocol_violation` | high = bad, always (pure overhead, see step 7's `_` note on when a standalone `Space` is unavoidable vs. not) |
+| `protocol_violation` | high = bad, always (pure overhead). `./run` now sends `Space` automatically before any real keys (a no-op when nothing's pending), so this bucket should read near-0 going forward — a nonzero count here means `Space` was sent explicitly anyway, not that dismissal was needed. Step 7's dismiss-a-bad-travel-cursor bullet is the one legitimate case where `Space` is itself the real action, not a preliminary dismiss. |
 | `travel` | near-0 = bad *if* the level had long explored corridors (reverse debt, see step 7's last bullet) — near-0 on a tiny level is fine |
 | `other` | high = a `classify()` gap, not player debt — means something is silently uncategorized again, worth a code fix, not a play-habit fix |
 | `search`, `combat`, `loot`, `explore`, `movement` | context-dependent — no fixed direction; judge against what the level actually contained (e.g. high `search`% on a level with few hidden doors found is debt, the same % after cracking open three vaults isn't) |
@@ -400,7 +400,16 @@ left," "should be fine") — that's the checklist not actually being clean;
 go finish it before deciding, not after.
 
 Only once the retrospective above has actually run and the checklist is
-clean does pressing `>` follow — not before either one.
+clean does pressing `>` follow — not before either one. "Has run" means
+run last, immediately before the `>` press — not run once earlier and then
+reused after more turns passed (combat, more exploring, side work).
+Confirmed this session: the breakdown ran once, then ~34 more turns of
+play happened (a kill, more rooms explored) before the actual decide-to-
+descend moment, which used the stale reading instead of a fresh one. It
+happened not to flip the decision here, but that's luck, not the rule
+working — if turns-on-level changed since the last run, rerun it fresh
+before deciding, don't reuse an earlier reading from earlier in the same
+pre-descent process.
 
 ## After descending (arriving on a new level)
 

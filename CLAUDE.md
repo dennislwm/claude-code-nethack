@@ -69,11 +69,14 @@ movement keys until you close it with `Space` or `Escape`.
 - `#name` — extended command, e.g. `./run '#quit'` (Enter is sent automatically)
 - `^P` — message history, one message back per press: `./run '^P'` or `./run C-p`
   (use after batched moves to catch messages that scrolled by, e.g. what hit you)
-- `Space` — dismiss "--More--" prompts; safe to prepend to any command
-  unconditionally (`./run Space h j`) since it's a harmless no-op when
-  nothing is pending, so you don't need a separate check first
+- `Space` — dismisses "--More--" prompts, but `./run` already sends it
+  automatically before your keys whenever you pass at least one argument
+  (a no-op when nothing's pending) — **don't send it yourself**, chained or
+  standalone; a call whose only argument is `Space` no longer does
+  anything a plain next action wouldn't already do for free
 - `Escape` — cancel a command (fails with "client is read-only" if a
-  read-only tmux viewer is attached — use `Space` to cancel/dismiss instead)
+  read-only tmux viewer is attached — use the next real action instead,
+  which dismisses via the automatic `Space` above)
 - `w` + letter — wield a weapon (needed for a launcher: bow/crossbow/sling)
 - `x` — exchange primary/alternate weapon
 - `Q` + letter — set quiver (preferred ammo for `f`)
