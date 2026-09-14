@@ -61,7 +61,19 @@ movement keys until you close it with `Space` or `Escape`.
 - `,` — pick up item
 - `e` — eat (prompts for what; use this for corpses, not `,` which only
   picks the item up)
-- `>` — descend stairs (must be standing on `>`)
+- `>` — descend stairs (must be standing on `>`). `./run` refuses to send
+  `>` at all unless `NETHACK_CHECKLIST_DONE=1` is set on that call (e.g.
+  `NETHACK_CHECKLIST_DONE=1 ./run '>'`) — run the nethack-navigation
+  skill's "Before descending" checklist first, every time, not just when
+  something feels off. **Two `>` on the same level is not a bug or a
+  render glitch** — the Guidebook documents it as expected on an early
+  level (typically Dlvl 2-4): one continues the main dungeon, the other
+  branches into the Gnomish Mines, and they look identical until you
+  descend one and check with `^X`. A Mines level is often substantially
+  harder than a main-dungeon level at the same Dlvl (its monster
+  selection can ignore normal difficulty capping) — enter around
+  character level 5-6, not at level 1, unless there's a specific reason
+  to go earlier. See References below.
 - `S` — save and quit
 - `.` — wait one turn
 - `i` — inventory
@@ -138,8 +150,10 @@ Use this regularly for situational awareness instead of building custom tools.
 - `%` — corpse / food
 - `{` — fountain/sink/boulder (context glyph, not an item — walking onto one
   and trying `,` prompts "You could drink the water..." instead of a pickup;
-  `#dip` a weapon here for a lawful Valkyrie's long-sword-to-Excalibur
-  chance, `#quaff`/dip-self is high-risk and mostly skipped)
+  `#dip` a **long sword specifically** here for a lawful Valkyrie's
+  Excalibur chance (1/6 per dip, needs level 5+, no effect on any other
+  weapon type — check inventory for one before planning around this),
+  `#quaff`/dip-self is high-risk and mostly skipped)
 
 ## Gameplay Knowledge
 
@@ -160,8 +174,25 @@ Use this regularly for situational awareness instead of building custom tools.
 ### Combat
 - Move into enemies to attack (automatic melee)
 - Pets help fight and eat corpses
-- Monitor HP; retreat when low
+- Monitor HP; retreat when low — "low" means well above half max, not
+  down at 1 HP; decide to disengage before it's forced
 - Early enemies (newt, sewer rat, grid bug) are easy for Valkyrie
+- Look up an unfamiliar monster (`/,?`) before engaging, not after
+- Let the pet step onto an unidentified item first — its reaction (or
+  lack of one) is a free, safe cursed-item check
 
 ### Formatting Pitfall
 When writing markdown tables that contain the pipe character `|`, always escape it as `\|`. Otherwise the table rendering breaks and the cell appears empty.
+
+## References
+`docs/GuideBookv5.0.0.md` is the official rules reference (mechanics,
+commands) — grep it first for any mechanic question. It doesn't cover
+community strategy (role builds, survival heuristics, branch-difficulty
+comparisons); for that, check `docs/wiki/*.md` (saved copies of the pages
+below) before fetching the live page from nethackwiki.com.
+- [Difficulty](https://nethackwiki.com/wiki/Difficulty) — how dungeon-level difficulty gates monster/room generation
+- [Monster difficulty](https://nethackwiki.com/wiki/Monster_difficulty) — the per-monster 1-57 difficulty rating
+- [Gnomish Mines](https://nethackwiki.com/wiki/Gnomish_Mines) — Mines vs. main-dungeon danger, Minetown, entry timing
+- [Valkyrie](https://nethackwiki.com/wiki/Valkyrie) — role-specific early strategy
+- [Standard strategy](https://nethackwiki.com/wiki/Standard_strategy) / [Why do I keep dying?](https://nethackwiki.com/wiki/Why_do_I_keep_dying) — general early-game survival
+- [Identification](https://nethackwiki.com/wiki/Identification) — engrave-testing, BUC-testing, price-ID

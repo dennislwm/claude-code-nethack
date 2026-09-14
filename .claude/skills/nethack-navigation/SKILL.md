@@ -70,10 +70,30 @@ Why: see memory entries `nethack_navigation_travel` and `nethack_stuck_input_dia
 5. **A dead-end-looking corner may just be a monster glyph on the tile** —
    before concluding a wall/dead-end, check whether a stationary monster is
    sitting on that square and look past/through it. If it's a mold/lichen
-   (brown mold `F` and similar), don't melee it either way — they deal
-   automatic damage back to any melee attacker regardless of whether your
-   attack lands; route around, or clear it with a ranged attack (thrown
-   weapon, wand, spellbook) instead.
+   (brown mold `F` and similar) or an acid blob (`b`), don't melee it by
+   default — they deal automatic damage back to any melee attacker
+   regardless of whether your attack lands; route around, or clear it with
+   a ranged attack (thrown weapon, wand, spellbook) instead.
+   **A floating eye (`e`) is a different, higher tier of the same rule —
+   never melee it under any circumstance, including the "no ranged, no
+   route-around" fallback below.** A successful melee hit paralyzes the
+   attacker for a long duration (can be fatal on its own if anything else
+   is nearby, and is fatal by starvation/thirst in the worst case even
+   alone) — nothing like the acid blob's minor retaliation. It's
+   stationary and never initiates, so the correct default is simply to
+   never step adjacent and melee it; a ranged kill is fine, or just leave
+   it alone entirely and route around, even if that means treating the
+   route as blocked.
+   **"Avoid melee" assumes ranged ammo and a route-around both exist —
+   check both before treating it as a hard rule.** Confirmed this session:
+   an acid blob sat in a single-tile corridor with no alternate path, and
+   the only thrown weapon (a dagger) had already missed and landed beyond
+   it, leaving neither option available. An acid blob's passive retaliation
+   is real but minor (a little acid damage, a chance to corrode the
+   weapon that hit it) — nowhere near a mold's danger — so when it's
+   genuinely the only way past a real frontier lead and no ranged means
+   remain, melee it rather than abandoning the lead; retrieve/rewield
+   normally afterward.
 6. **Walking a room's perimeter, watch every wall tile passed, not just the
    4 corners** — a `#terrain` glimpse or a few blocked-move attempts don't
    confirm a room is closed. Three distinct anomaly shapes, all easy to
@@ -153,6 +173,19 @@ Why: see memory entries `nethack_navigation_travel` and `nethack_stuck_input_dia
    and logged, then never compared against the wielded +1 spear — it sat in
    inventory unused for the rest of the level.
 
+   An unidentified wand pickup is the same kind of moment, not just a loot
+   event: engrave-test it (`E` + its letter) the same turn, when no hostile
+   is adjacent (engraving costs a turn and isn't a defensive action, so
+   don't do this mid-fight) — "you write in the dust with the wand" tells
+   you nothing conclusive, but "the wand is too worn out to engrave"
+   confirms it's a charge-based wand at 0 charges, and anything else
+   narrows it further. Confirmed this session: a runed wand was picked up,
+   logged, and never tested at all for the rest of the game — it was still
+   sitting unidentified and untested in inventory at death, a wand of
+   teleportation or striking (either a possible escape or a possible
+   fight-ender) among the plausible identities that was never ruled in or
+   out.
+
    A container (chest/box, `(`) is looted where it lies — `#loot` (or
    `#force` if locked) works on the ground, no pickup needed. Confirmed
    this session: picking one up first caused encumbrance (Stressed status,
@@ -212,6 +245,11 @@ Given a target tile, use the cheapest rung that applies:
    check `far:`/`paths:` for which cardinal direction is actually open at
    each step, the same as any other move (cost 3 wasted wall-bumps this
    session).
+   The scan also flags a dead-end corridor tile even with zero blank
+   neighbors (every surrounding cell already revealed by line-of-sight or
+   an earlier visit, not by walking the branch to its real end) — found
+   this way in one try on a level the blank-adjacency check alone had
+   missed for 700+ turns.
    Empty result: fall back to `all_doors`/`all_closed_doors` from
    `helper/cursor_probe.py` (`import sys; sys.path.insert(0, "helper");
    import cursor_probe as cp; cp.all_doors(map_lines, cp.parse_colors(pane))` /
@@ -227,13 +265,33 @@ Given a target tile, use the cheapest rung that applies:
    branch's searches into this level's tally. No extra step needed; the
    CLI does this automatically from the log itself.
    The same run also prints `by direction: N=.. S=.. E=.. W=.. -- least
-   explored: X` — check this before treating a whole side of the map as
-   done, not just the nearest-tile list above (this session's stairs-down
-   miss, see rung 6's loop-vs-dead-end note, sat behind exactly the
-   direction this line would have flagged).
+   explored: X,X,X,X` (all four directions, ranked lowest-coverage first,
+   not just the single worst one) — check this before treating a whole
+   side of the map as done, not just the nearest-tile list above (this
+   session's stairs-down miss, see rung 6's loop-vs-dead-end note, sat
+   behind exactly the direction this line would have flagged).
+   **Act on the ranking, don't just note it:** working down the list from
+   least to most explored, take the room(s) lying in that direction's
+   fixed half of the map — N/S split at row 10, E/W split at col 40, the
+   same fixed midpoint `by direction:` itself is computed from, not
+   "whichever room looks closest right now" — and run rung 6's perimeter
+   check on it (every `-`/`|` wall tile bordering that room's own floor,
+   not just the 4 corners) if that room hasn't had it done yet. Move to
+   the next direction in the ranking only once the current one's rooms are
+   perimeter-checked or confirmed to have none left unchecked.
 6. **No travel path at all, even to a nearby tile** (fully walled off) —
-   is this really a dead end, or just where I stopped looking? Search for
-   hidden passages before manual walking further.
+   is this really a dead end, or just where I stopped looking? **Before
+   searching, check whether the `far:`/`paths:` "blocked" reading is about
+   rock, or just about un-stood-on tiles that a plain step would reveal.**
+   Map tiles only render once you've stood on or had line-of-sight from an
+   adjacent square — `s` finds *hidden* doors/passages, it does nothing for
+   ground that's simply unrevealed. Confirmed this session: 20 searches
+   were burned at a tile every one of whose 8 neighbors read blocked/rock,
+   before trying the cheap thing first — 2 plain movement keys past that
+   tile's own dead end (a different offset than the one searched) opened
+   straight into a new room with the level's stairs down. Search only after
+   confirming every neighboring floor tile has actually been walked onto or
+   revealed, not merely glanced at in the printed grid.
    A corridor that seems to loop back into already-known territory is a
    different question than a wall — has it actually been walked to its
    real end, or dismissed as "just a loop" partway through? Confirmed this
@@ -263,7 +321,13 @@ Given a target tile, use the cheapest rung that applies:
    carrying one doesn't trigger a dig prompt), then `a` + its letter + the
    boulder's direction — shatters it into rocks (sometimes a gem). A
    stone-to-flesh spell also works, turning it into a movable chunk of
-   meat. None available: treat the route as blocked for now and go
+   meat. No item available and pushing is exhausted from every angle:
+   dropping everything (`D` select-all, or drop one at a time) can let you
+   squeeze onto the boulder's own tile without pushing it (guidebook:
+   "drop everything in order to be able to squeeze into the same location
+   as a boulder") — worth trying before writing the route off, since it
+   needs no item at all, just less carried weight; re-pick-up after
+   passing. Otherwise treat the route as blocked for now and go
    around — but is "for now" still true, or was that decided before the
    last unwalked branch got checked?
 
@@ -285,6 +349,24 @@ Read top to bottom — stop at the first rung that applies.
      50% HP, not after already critical. Don't assume safety from species
      name alone — a kitten once hit for 3-5 repeatedly and crashed HP
      14->9 in a single 3-turn batch.
+     A displayed name can also be a disguise, not a misjudgment of a real
+     species: a chameleon (or any shapeshifter) imitates another monster's
+     glyph and name while keeping its own randomized combat stats for that
+     shape, so `/,m` naming something moderate (e.g. "winged gargoyle") is
+     not the same guarantee as it being a real, single-species monster —
+     killed Claude this way (Dlvl:9, T:5488-5489: HP 65->24->13->0 across
+     three exchanges against a "winged gargoyle" that was a chameleon in
+     disguise, far harder-hitting than that species normally is). No
+     reliable way to tell from `/,m` alone; the actionable takeaway is to
+     disengage on the *damage rate actually observed* (a 40+ HP swing in
+     one exchange is heavy-hitter behavior regardless of the name shown),
+     not on the name's normal expected tier. The fatal exchange also had an
+     open retreat route the whole time (`paths:` showed the corridor
+     already walked in as open) that went unused for two more exchanges
+     after the first 40+ HP swing — recognizing the damage rate is only
+     half the fix; the other half is actually disengaging via a route
+     that's open, not continuing to trade blows on the assumption that one
+     more hit finishes it.
    - *Stealers* (permanent-loss risk, not damage): nymphs (`n`) steal a
      carried item and teleport away on a successful hit against you;
      leprechauns (`l`) do the same with gold. The theft triggers on any
@@ -317,6 +399,16 @@ Read top to bottom — stop at the first rung that applies.
    `y`). Can trigger full HP restoration via divine intervention (confirmed
    once: deity Tyr, HP 1->53). Legitimate emergency action, not a routine
    tactic — prayers can be refused if overused or if alignment/luck is poor.
+   **Praying does not cancel the current attacker's turn.** Confirmed fatal
+   this session: `#pray` was sent at HP 13 while still adjacent to a
+   still-hostile monster (rule 3's "never batch while adjacent" applies to
+   this command too) — the monster's next hit resolved before the prayer
+   did, dropping HP 13->0 and killing Claude one line before "You feel
+   much better" would have printed. Pray *before* HP is merely critical if
+   the attacker is still adjacent and un-fled, not at the last possible
+   HP margin — treat #pray like any other single action against an
+   adjacent hostile: it does not substitute for disengaging first when
+   disengaging is still possible.
 
 ## Entering a shop
 
@@ -370,6 +462,19 @@ adjustment into the next level, not a retrospective on this one. Skip this
 entirely if the level was a quick pass-through with too few turns to be
 meaningful.
 
+Same skip-if-nothing-happened gate applies to a mechanics check: only if
+this level involved a genuine surprise (a near-death, an unfamiliar status
+effect, a command that didn't do what was expected, several wasted turns
+on the same wrong assumption) — not every level — grep
+`docs/GuideBookv5.0.0.md` for the specific term(s) involved (not a full
+read; it's 250KB+) to check whether a documented mechanic was missed or
+misapplied. If it was, invoke `ponytail:ponytail` before writing anything,
+then land the fix as the smallest possible edit: usually one clause in
+CLAUDE.md's relevant Map Symbols/Gameplay Knowledge line, or one clause in
+this skill's matching rung — never a new standalone section for a single
+finding. No finding, no edit — this is a targeted grep against a known
+symptom, not a survey.
+
 With the checklist's actual findings in hand, then weigh cost:
 - A concrete lead from the checklist (an `all_doors`-flagged
   `adjacent_unexplored` door, a `frontier: ... (closed door)`, a `new:` not
@@ -418,6 +523,65 @@ happened not to flip the decision here, but that's luck, not the rule
 working — if turns-on-level changed since the last run, rerun it fresh
 before deciding, don't reuse an earlier reading from earlier in the same
 pre-descent process.
+
+## Upon death
+
+Death is the one event that always satisfies the "genuine surprise" trigger
+in the pre-descent mechanics check above (near-death, unfamiliar effect, a
+wrong assumption) — run that same grep-guidebook-then-ponytail-then-fix
+chain immediately, not deferred, since there is no next level to carry the
+lesson into and the death screen's own detail (exact killer, exact HP
+sequence) is the last chance to capture it before it's gone. Difference
+from the pre-descent version: nothing to weigh against turns-sunk or
+coverage — there's no judgment call about whether it's worth doing, only
+whether a real mechanic gap surfaces from the grep.
+
+1. Capture the fatal sequence before doing anything else: the exact kill
+   message from the death screen (a chameleon/shapeshifter disguise only
+   shows in this message, never in `/,m` while alive), and the HP trace
+   across the last few exchanges from the conversation's own tool output —
+   read it back from what's already on screen, don't try to re-derive it.
+   Also run `python3 helper/turn_log.py --breakdown` for the fatal level
+   itself (it's scoped to that Dlvl:N regardless of whether you ever leave
+   it, same as the pre-descent step) — a spike in `combat` or
+   `protocol_violation` right at the end is itself a process-gap signal
+   (e.g. batched actions against an already-hostile adjacent monster) worth
+   checking before assuming the death was purely a coverage gap.
+2. Ask: did an existing threat-ladder or pre-descent rule apply here and
+   not fire (a process gap — batching, misread name, late disengage), or
+   is this a mechanic neither the skill nor CLAUDE.md documents at all (a
+   coverage gap)? Two concrete checks feed this, both instances of "was an
+   existing option simply not used":
+   - **Escape route.** Was there an open door or corridor within reach that
+     disengagement could have used, or was the killer genuinely blocking
+     the only way out? A death next to a known, unused exit is a process
+     gap (late disengage), not a coverage gap — no rule was missing, one
+     just didn't fire in time.
+   - **Unused resources.** Was there an escape or defensive item already
+     in inventory at the time — a teleport scroll, an unidentified potion,
+     a wand, ranged ammo with a launcher wielded — that went untried? This
+     mirrors the rothe/unused-ranged-weapons precedent already logged in
+     rung 2 above; a death with an unused out in inventory is the
+     highest-stakes version of that same pattern.
+   The two gap types need different fixes: a process gap gets a caveat
+   added to the rule that should have caught it (see the
+   chameleon/prayer-timing entries in the threat ladder above); a coverage
+   gap gets a targeted guidebook grep for the specific mechanic before
+   writing anything, same as the pre-descent step — fall back to
+   `docs/wiki/*.md`, then a live nethackwiki.com fetch, when it's a
+   community-strategy question the official guidebook doesn't cover (see
+   CLAUDE.md's References section).
+3. Chain 5 whys from "why did this exchange end in death" down to a fact,
+   same discipline as the pre-descent "why descend now" chain — each
+   answer citing the turn_log breakdown, the escape-route check, or the
+   unused-resources check above, never "it seemed fine" or "should have
+   been survivable." If the chain bottoms out on an assumption instead of
+   one of those concrete findings, step 1 or 2 wasn't actually finished —
+   go back and finish it before writing any fix.
+4. Invoke `ponytail:ponytail` before writing either fix. Land it as the
+   smallest edit to the existing rung/line that should have covered this —
+   never a new standalone section for one death, matching the pre-descent
+   step's own rule.
 
 ## After descending (arriving on a new level)
 

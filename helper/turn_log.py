@@ -110,6 +110,23 @@ def current_log_path() -> str:
     return os.path.join(GAME_STATE_DIR, name)
 
 
+def read_log_entries():
+    """Every parsed JSON entry in the current turn log, in file order --
+    the shared skeleton behind current_visit_t_range, subgoal_breakdown,
+    and frontier_scan's visited_tiles/search_counts, which each used to
+    hand-roll the same open/read/json.loads/skip-torn-lines/missing-file
+    loop. One place to get this right, four fewer copies to keep in sync."""
+    try:
+        with open(current_log_path()) as f:
+            for line in f:
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # one torn/corrupt line must not sink the whole read
+    except FileNotFoundError:
+        return
+
+
 def _last_entry(log_path):
     try:
         with open(log_path) as f:
@@ -182,16 +199,7 @@ def current_visit_t_range(dlvl=None):
     scope to just this visit, not conflate it with an earlier visit to the
     same Dlvl:N number in a different branch. Returns None if the log is
     empty or the tail isn't at `dlvl`."""
-    entries = []
-    try:
-        with open(current_log_path()) as f:
-            for line in f:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return None
+    entries = list(read_log_entries())
     if not entries:
         return None
     if dlvl is None:
@@ -217,16 +225,7 @@ def subgoal_breakdown(dlvl=None, t_range=None):
     and came back. Pass t_range=(start, end) (each `T:` inclusive) to scope
     to one visit's actual turn span instead -- every entry already carries
     `t`, so no schema change is needed for this."""
-    entries = []
-    try:
-        with open(current_log_path()) as f:
-            for line in f:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue  # one torn/corrupt line must not sink the whole count
-    except FileNotFoundError:
-        return {}
+    entries = list(read_log_entries())
     if dlvl is None and entries:
         dlvl = entries[-1]["dlvl"]
     matches = (e for e in entries if e.get("dlvl") == dlvl)
@@ -403,4 +402,14 @@ if __name__ == "__main__":
             print(f"{subgoal:20} {n:4}  {n / total:.0%}")
     else:
         keys, output = sys.argv[1], sys.argv[2]
-        print(log_turn(keys, output))
+        entry = log_turn(keys, output)
+        # Printed here (not just logged) so `run` can surface it the same
+        # turn it happened, instead of only being visible later via
+        # --breakdown -- confirmed this session: several consecutive
+        # movement batches landed as protocol_violation (T: unchanged)
+        # and went unnoticed for multiple calls in a row.
+        if entry and entry.get("subgoal") == "protocol_violation":
+            print(
+                f"[turn_log] protocol_violation: {keys!r} batched keys, "
+                "T: unchanged -- see SKILL.md threat-ladder rule 3 / travel rule"
+            )

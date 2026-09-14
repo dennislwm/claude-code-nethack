@@ -12,84 +12,38 @@ import turn_log as tl
 
 SEARCH_EXHAUSTED = 10  # 10x searched, nothing found -- CLAUDE.md's own bar
 
-
-def map_coverage(map_lines):
-    """% of known map cells (rows/cols actually captured) that are non-blank
-    -- a rough "how much of this level have I actually seen" gauge. Excludes
-    status-bar rows the same way find_frontiers does; doesn't distinguish
-    floor from wall, just seen vs. unseen."""
-    rows = [r for r in map_lines if not cp.tm.is_status_line(r)]
-    total = sum(len(r) for r in rows)
-    if total == 0:
-        return 0.0
-    seen = sum(1 for r in rows for c in r if c != " ")
-    return seen / total
+# map_coverage/coverage_band/directional_coverage/COVERAGE_BANDS/MAP_CELLS
+# live in cursor_probe.py, not here -- this module already imports
+# cursor_probe (a reverse import would be circular), so it's the only
+# module that can hold the shared logic without duplicating it. Confirmed
+# this session: a duplicate copy sitting in cursor_probe.py for the HTML
+# renderer had silently kept the old, buggy dynamic-denominator behavior
+# after this file's copy was fixed -- two copies means a fix in one place
+# isn't a fix. Use cp.map_coverage / cp.coverage_band /
+# cp.directional_coverage / cp.MAP_CELLS directly.
 
 
-# (upper bound, label) -- coverage < bound gets that label; falls through to
-# "max" past the last one. A lot of a captured level is permanent rock/border
-# that never reveals, so treat >50% as effectively fully explored rather than
-# expecting 100%.
-COVERAGE_BANDS = [(0.10, "sparse"), (0.25, "low"), (0.40, "medium"), (0.50, "high")]
+def visited_tiles(dlvl=None, t_range=None):
+    """Every (row,col) the player actually stood on, from this game's own
+    turn log -- same scoping as search_counts (dlvl/t_range), since Dlvl:N
+    repeats across branches. Used to catch a corridor fork that's fully
+    revealed on both sides (by line-of-sight down a straight passage) but
+    only one side was ever walked: neither existing check catches it,
+    since a revealed-not-walked branch has no blank neighbor (LOS already
+    filled it in) and isn't a dead end (it has 2+ passable neighbors)."""
+    seen = set()
+    for entry in tl.read_log_entries():
+        if "row" not in entry:
+            continue
+        if dlvl is not None and entry.get("dlvl") != dlvl:
+            continue
+        if t_range is not None and not (t_range[0] <= entry.get("t", -1) <= t_range[1]):
+            continue
+        seen.add((entry["row"], entry["col"]))
+    return seen
 
 
-def coverage_band(frac):
-    for bound, label in COVERAGE_BANDS:
-        if frac < bound:
-            return label
-    return "max"
-
-
-def directional_coverage(map_lines):
-    """Same idea as map_coverage, split into N/S and E/W halves at the
-    map's own fixed midpoint -- not the player's position. A player-relative
-    split gives each half a different-sized denominator (a bucket right next
-    to an edge is tiny and trivially ~100% seen), which made a lopsided
-    level near a wall misreport a real gap as "92% explored." A fixed split
-    keeps all four buckets the same size, so the percentage means the same
-    thing in each of them.
-
-    Each row is walked over its own real length, not padded out to the
-    widest row -- padding would invent phantom blank cells past a row's
-    actual captured length (tmux capture-pane represents unexplored trailing
-    space by ending the line early, not with literal spaces), inflating
-    every bucket's denominator far past map_coverage's, and desyncing the
-    two: confirmed this session, a padded-to-71-cols version totaled 4189
-    cells against map_coverage's 913 for the same capture, so the printed
-    per-direction percentages read far lower than they should and didn't
-    reconcile with the overall coverage line at all.
-
-    Trailing all-blank rows are dropped before picking mid_r -- the tmux
-    pane is taller than NetHack's own ~21-row playfield, so the tail of
-    `map_lines` is dead terminal padding, not unexplored level. Splitting
-    on the raw row count (mid_r = len(rows)//2) put the N/S boundary deep
-    inside that padding, so the S bucket measured space that can never
-    have content -- it read 0% regardless of what the level actually
-    contained (confirmed this session: a 59-row capture with real content
-    ending at row 21 put mid_r at row 29)."""
-    rows = [r for r in map_lines if not cp.tm.is_status_line(r)]
-    while rows and not rows[-1].strip():
-        rows.pop()
-    if not rows:
-        return {d: 0.0 for d in "NSEW"}
-    mid_r = len(rows) // 2
-    mid_c = max((len(r) for r in rows), default=0) // 2
-    seen = {"N": 0, "S": 0, "E": 0, "W": 0}
-    total = {"N": 0, "S": 0, "E": 0, "W": 0}
-    for r, row in enumerate(rows):
-        ns = "N" if r < mid_r else "S" if r > mid_r else None
-        for c, cell in enumerate(row):
-            ew = "W" if c < mid_c else "E" if c > mid_c else None
-            for d in (ns, ew):
-                if d is None:
-                    continue
-                total[d] += 1
-                if cell != " ":
-                    seen[d] += 1
-    return {d: (seen[d] / total[d] if total[d] else 0.0) for d in seen}
-
-
-def find_frontiers(map_lines, colors):
+def find_frontiers(map_lines, colors, visited=frozenset()):
     frontiers = []
     for r, row in enumerate(map_lines):
         if cp.tm.is_status_line(row):
@@ -106,11 +60,53 @@ def find_frontiers(map_lines, colors):
             # A hand-rolled check that rejects out-of-range before ever
             # comparing to " " misses that identical case (confirmed this
             # session: a real corridor tile went unflagged this way).
-            if any(
-                cp.tm.cell_at(map_lines, r + dr, c + dc) == " "
-                for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)
+            # Once a tile has actually been visited, standing on it already
+            # resolved whatever local mystery a blank neighbor implied --
+            # if it were real floor, walking onto this tile would have
+            # revealed it. A blank neighbor that survives a visit is
+            # permanent, unreachable rock (typically a diagonal corner past
+            # a 1-wide corridor's flank), not a lead. Confirmed this
+            # session: 53 of 69 reported frontiers on one live level were
+            # tiles already stood on, re-flagged every run because this
+            # exclusion existed only on the newer fork check below, not
+            # here -- the dominant false-positive source, not the
+            # diagonal-corner case it was first suspected to be.
+            neighbors = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
+            if (r, c) not in visited and any(
+                cp.tm.cell_at(map_lines, r + dr, c + dc) == " " for dr, dc in neighbors
             ):
                 frontiers.append((r, c))
+                continue
+            # A corridor tile can dead-end with zero blank neighbors: every
+            # cell around it already got revealed (by line-of-sight down a
+            # straight corridor, or from an earlier visit) even though the
+            # branch itself was never walked to its real end. The 8-neighbor
+            # blank check above misses this -- confirmed this session, a
+            # dead-end corridor tile with exactly one passable neighbor
+            # (nothing continues past it) was the level's real lead. Flag
+            # any passable, non-room cell whose passable-neighbor count is
+            # <=1 as a frontier too; a room floor tile is excluded since a
+            # room interior legitimately has few open neighbors without
+            # being a dead end.
+            if cell == "#":
+                passable_neighbors = sum(
+                    1 for dr, dc in neighbors
+                    if cp.is_passable(map_lines, r + dr, c + dc, colors)
+                )
+                if passable_neighbors <= 1:
+                    frontiers.append((r, c))
+                    continue
+                # Revealed-but-unwalked fork: a corridor tile with 2+
+                # passable neighbors, never itself visited, sitting next
+                # to a tile that WAS visited -- the player walked past it
+                # (saw it via line-of-sight down the passage) without
+                # turning into it. Confirmed this session: this is exactly
+                # the shape of corridor the blank-adjacency and dead-end
+                # checks both miss.
+                if (r, c) not in visited and any(
+                    (r + dr, c + dc) in visited for dr, dc in neighbors
+                ):
+                    frontiers.append((r, c))
     return frontiers
 
 
@@ -127,23 +123,15 @@ def search_counts(dlvl=None, t_range=None):
     bare dlvl filter conflates two unrelated visits' searches into one
     misleading per-tile count."""
     counts = {}
-    try:
-        with open(tl.current_log_path()) as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # one torn/corrupt line must not sink every future scan
-                if entry.get("subgoal") != "search" or "row" not in entry:
-                    continue
-                if dlvl is not None and entry.get("dlvl") != dlvl:
-                    continue
-                if t_range is not None and not (t_range[0] <= entry.get("t", -1) <= t_range[1]):
-                    continue
-                key = (entry["row"], entry["col"])
-                counts[key] = counts.get(key, 0) + entry.get("search_count", 0)
-    except FileNotFoundError:
-        pass
+    for entry in tl.read_log_entries():
+        if entry.get("subgoal") != "search" or "row" not in entry:
+            continue
+        if dlvl is not None and entry.get("dlvl") != dlvl:
+            continue
+        if t_range is not None and not (t_range[0] <= entry.get("t", -1) <= t_range[1]):
+            continue
+        key = (entry["row"], entry["col"])
+        counts[key] = counts.get(key, 0) + entry.get("search_count", 0)
     return counts
 
 
@@ -157,74 +145,49 @@ def _demo():
     colors = {}
     result = find_frontiers(lines, colors)
     assert (2, 3) in result
-    assert map_coverage(["--", "  "]) == 0.5
-    assert map_coverage(["St:18/05", "--"]) == 1.0  # status row excluded, not counted as blank
-    assert coverage_band(0.05) == "sparse"
-    assert coverage_band(0.46) == "high"
-    assert coverage_band(0.50) == "max"
-    assert coverage_band(0.99) == "max"
-
-    # Fixed 3x3 grid split at its own midpoint (row 1, col 1), independent
-    # of where the player stands. North row and west column are blank;
-    # south row and east column are fully seen.
-    #   row0 "   " (north row, all blank)
-    #   row1 " . " (middle row: west cell blank, east cell blank)
-    #   row2 " .." (south row: west cell blank, east cell seen)
-    lopsided = ["   ", " . ", " .."]
-    dc = directional_coverage(lopsided)
-    assert dc["N"] == 0.0        # 0 of 3 north cells seen
-    assert dc["W"] == 0.0        # 0 of 3 west cells seen
-    assert dc["S"] == 2 / 3      # 2 of 3 south cells seen
-    assert dc["E"] == 1 / 3      # 1 of 3 east cells seen
-    assert min(dc, key=dc.get) in ("N", "W")  # tied for least-explored
-
-    # A player standing right next to an edge must not inflate that side's
-    # coverage -- the split point is the map's own midpoint, not the player's,
-    # so a small explored sliver near an edge doesn't read as "100% explored."
-    # (Content is on the LAST row here, not a middle one, so the trailing-
-    # blank-row trim below doesn't remove it and change the test's shape.)
-    edge_grid = ["    ", "    ", "  .."]
-    dc2 = directional_coverage(edge_grid)
-    assert dc2["E"] < 0.5  # only 1 of 3 east-half cells seen, not 100%
-
-    # Ragged rows (tmux capture-pane's real shape -- unexplored trailing
-    # space ends the line early, it isn't padded with literal " ") must not
-    # get padded out to the widest row -- that invents phantom blank cells
-    # past each short row's real length, inflating the denominator far past
-    # map_coverage's and desyncing the two (confirmed this session: 4189
-    # padded cells vs. 913 real ones for the same live capture). A ragged
-    # grid's N+S total and W+E total must each equal its real cell count.
-    ragged = [".", "..", "..."]  # 1+2+3 = 6 real cells total
-    dc3 = directional_coverage(ragged)
-    real_cells = sum(len(r) for r in ragged)
-    assert real_cells == 6
-    # every cell is fully seen ("." only), so each half's own ratio is 1.0
-    # regardless of how the 6 real cells split across the buckets --
-    # padding would instead pull every ratio below 1.0 by mixing in blanks.
-    assert dc3["N"] == 1.0 and dc3["S"] == 1.0
-    assert dc3["W"] == 1.0 and dc3["E"] == 1.0
     assert (1, 1) not in result
-
-    # Trailing all-blank rows (dead terminal space below NetHack's own
-    # ~21-row playfield -- the tmux pane is taller than the game itself
-    # uses) must not shift mid_r into that padding. A 3-row real level
-    # followed by 7 blank rows must split the same as the 3-row level
-    # alone, not put N=all-3-rows, S=all-padding (which reads S as 0%
-    # forever regardless of what the level contains).
-    padded = [".", "..", "..."] + [""] * 7
-    dc4 = directional_coverage(padded)
-    assert dc4 == dc3
-
-    # Rows blank because of pure whitespace, not true "" entries, get
-    # treated identically -- still just padding.
-    padded_ws = [".", "..", "..."] + [" " * 5] * 7
-    assert directional_coverage(padded_ws) == dc3
 
     # A neighboring line that's simply SHORTER (no trailing space at all)
     # must count as blank too -- this is how tmux capture-pane actually
     # represents unexplored space, not padded literal " " characters.
     short_lines = ["##", "#"]  # row1 ends before row0's col1
     assert (0, 1) in find_frontiers(short_lines, {})
+
+    # A dead-end corridor tile with no blank neighbor at all (every
+    # surrounding cell already revealed) must still be flagged -- degree-1
+    # passable-neighbor count, not blank-adjacency, catches it.
+    #   ----
+    #   |..|#
+    #   ----#
+    #      #   <- dead end, col 6, all neighbors non-blank
+    dead_end = [
+        "----",
+        "|..|#",
+        "----#",
+        "    #",
+    ]
+    de_frontiers = find_frontiers(dead_end, {})
+    assert (3, 4) in de_frontiers
+
+    # A T-junction fork fully revealed by line-of-sight on both arms, only
+    # one of which was ever walked, must be flagged even though it's
+    # neither blank-adjacent nor a dead end (degree 2). @ stood at (1,1)
+    # and (1,2) (visited); the branch at (0,1) forks off but was never
+    # stepped into.
+    #   ...
+    #   .#.
+    #   .@@
+    #   ...
+    fork = [
+        "...",
+        ".#.",
+        ".@@",
+        "...",
+    ]
+    visited = {(2, 1), (2, 2)}
+    fork_frontiers = find_frontiers(fork, {}, visited)
+    assert (1, 1) in fork_frontiers
+    assert (1, 1) not in find_frontiers(fork, {})  # absent without visited data
 
     # A status-bar row ("Co:18 In:8...") must never be scanned as terrain --
     # its text is passable-looking and sits next to real blank space, which
@@ -302,22 +265,29 @@ if __name__ == "__main__":
         dlvl = status["dlvl"] if status else None
         t_range = tl.current_visit_t_range(dlvl) if dlvl is not None else None
         counts = search_counts(dlvl=dlvl, t_range=t_range)
+        visited = visited_tiles(dlvl=dlvl, t_range=t_range)
         # ponytail: annotate, never drop -- search is probabilistic (10x
         # empty is evidence, not proof a door isn't there), so a hard
         # exclusion risks permanently burying a real lead. Sort exhausted
         # tiles last, tagged, so they're still visible if worth retrying.
         frontiers = sorted(
-            find_frontiers(lines, colors),
+            find_frontiers(lines, colors, visited),
             key=lambda rc: (counts.get(rc, 0) >= SEARCH_EXHAUSTED, abs(rc[0] - pr) + abs(rc[1] - pc)),
         )
         for r, c in frontiers:
             n = counts.get((r, c), 0)
             tag = f" [searched {n}x]" if n else ""
             print(f"{cp.offset_str(r - pr, c - pc)} ({r},{c}): {lines[r][c]!r}{tag}")
-        pct = map_coverage(lines)
-        turns = sum(tl.subgoal_breakdown(dlvl=dlvl, t_range=t_range).values())
-        print(f"coverage: {pct:.0%} ({coverage_band(pct)}), turns on this level: {turns}")
-        dc = directional_coverage(lines)
-        lowest = min(dc, key=dc.get)
+        pct = cp.map_coverage(lines)
+        # subgoal_breakdown already reads+parses the whole log once and
+        # returns every category -- keep the dict instead of discarding it
+        # down to just the sum, since movement share is a free byproduct
+        # of a call already being made, not a second pass.
+        subgoals = tl.subgoal_breakdown(dlvl=dlvl, t_range=t_range)
+        turns = sum(subgoals.values())
+        movement_pct = subgoals.get("movement", 0) / turns if turns else 0.0
+        print(f"coverage: {pct:.0%} ({cp.coverage_band(pct)}), turns on this level: {turns} ({movement_pct:.0%} movement)")
+        dc = cp.directional_coverage(lines, row_offset=1)
+        ranked = sorted(dc, key=dc.get)  # least explored first
         by_dir = " ".join(f"{d}={dc[d]:.0%}" for d in ("N", "S", "E", "W"))
-        print(f"by direction: {by_dir} -- least explored: {lowest}")
+        print(f"by direction: {by_dir} -- least explored: {','.join(ranked)}")

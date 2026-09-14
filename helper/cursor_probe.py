@@ -45,16 +45,13 @@ LABELS = [
 ]
 
 
-def tmux(*args):
-    return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, check=True
-    ).stdout
-
-
 def cursor_row_col(pane):
     """tmux's cursor position, already in the same (row, col) indexing as
     the captured map lines -- no conversion needed."""
-    out = tmux("display-message", "-p", "-t", pane, "-F", "#{cursor_x},#{cursor_y}").strip()
+    out = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", pane, "-F", "#{cursor_x},#{cursor_y}"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
     cx, cy = (int(v) for v in out.split(","))
     return cy, cx
 
@@ -527,19 +524,46 @@ def neighborhood_html(map_lines, colors, pr, pc, prev_lines):
     return "\n".join(lines)
 
 
+# NetHack's own fixed playfield size (include/global.h: COLNO 80, ROWNO
+# 21; COLNO also matches tm.MAP_WIDTH, the column cutoff split_output
+# already uses to separate map from overlay). Column 0 is structurally
+# never used for terrain, so the real usable width is COLNO-1. This is the
+# single canonical home for map_coverage/directional_coverage/
+# COVERAGE_BANDS -- frontier_scan.py imports this module already (a
+# reverse import would be circular), so it calls these via `cp.*` instead
+# of keeping its own copy. Confirmed this session: the coverage line shown
+# in the published HTML artifact (render_html below) was silently running
+# a separate, unfixed duplicate of this logic the whole time a fix was
+# believed to be live in frontier_scan.py alone.
+NETHACK_COLNO = tm.MAP_WIDTH
+NETHACK_ROWNO = 21
+MAP_CELLS = (NETHACK_COLNO - 1) * NETHACK_ROWNO
+
+
 def map_coverage(map_lines):
-    """% of known map cells that are non-blank -- same calculation as
-    frontier_scan.map_coverage, duplicated here (not imported) since
-    frontier_scan already imports this module and a reverse import would
-    be circular."""
+    """% of the level's true fixed cell count (MAP_CELLS) that's non-blank
+    in the capture -- against NetHack's own playfield size, not the size
+    of whatever got captured. A dynamic denominator (summing each row's
+    own captured length) silently shrinks to match only what's been drawn
+    so far, since tmux capture-pane trims unrevealed trailing space rather
+    than padding it with literal " " -- confirmed this session, a live
+    level read 43.6% coverage against the dynamic denominator but only
+    15.6% against this fixed one, a ~2.8x overstatement."""
     rows = [r for r in map_lines if not tm.is_status_line(r)]
-    total = sum(len(r) for r in rows)
-    return sum(1 for r in rows for c in r if c != " ") / total if total else 0.0
+    seen = sum(1 for r in rows for c in r if c != " ")
+    return seen / MAP_CELLS
 
 
-# Same bands as frontier_scan.COVERAGE_BANDS, duplicated for the same
-# import-direction reason as map_coverage above.
-COVERAGE_BANDS = [(0.10, "sparse"), (0.25, "low"), (0.40, "medium"), (0.50, "high")]
+# (upper bound, label) -- coverage < bound gets that label; falls through
+# to "max" past the last one. A lot of a captured level is permanent
+# rock/border that never reveals, so treat the top band as effectively
+# fully explored rather than expecting 100%.
+# ponytail: rescaled from the pre-fix thresholds (0.10/0.25/0.40/0.50) by
+# the ~0.358x ratio observed when map_coverage's denominator changed from
+# the captured-viewport size to MAP_CELLS, then doubled on user feedback
+# that the first-pass bands felt too tight. Still one data point, not a
+# calibration study; revisit against a range of real levels.
+COVERAGE_BANDS = [(0.08, "sparse"), (0.18, "low"), (0.28, "medium"), (0.36, "high")]
 
 
 def coverage_band(frac):
@@ -549,44 +573,49 @@ def coverage_band(frac):
     return "max"
 
 
-def directional_coverage(map_lines):
-    """Same calculation as frontier_scan.directional_coverage, duplicated
-    here for the same import-direction reason as map_coverage above. Split
-    at the map's own fixed midpoint, not the player's position -- a
-    player-relative split gives each half a different-sized denominator (a
-    bucket right next to an edge is tiny and trivially ~100% seen), which
-    made a lopsided level near a wall misreport a real gap as "92% explored."
+def directional_coverage(map_lines, row_offset=0):
+    """Same idea as map_coverage, split into N/S and E/W halves at
+    NetHack's own fixed playfield midpoint -- not a midpoint computed from
+    whatever got captured. A dynamic split suffers the identical
+    self-referential-denominator bug as map_coverage's old dynamic form:
+    as more of the level gets revealed, the midpoint itself drifts, so a
+    percentage now isn't comparable to one ten turns ago, and which
+    direction reads as "least explored" can flip for no reason other than
+    capture size changing.
 
-    Each row is walked over its own real length, not padded out to the
-    widest row -- padding invents phantom blank cells past a row's actual
-    captured length, inflating every bucket's denominator far past
-    map_coverage's and desyncing the two (confirmed: 4189 padded cells vs.
-    913 real ones for the same capture).
+    `row_offset` is how many leading rows sit before the real playfield's
+    own row 0 in `map_lines` -- pass 1 for a raw tmux capture-pane grab
+    (NetHack always reserves screen row 0 for the message line, blank or
+    not) or for `map_area` from `tm.split_output` (column-only split,
+    rows stay aligned with the raw capture). Pass 0 (default) for a
+    synthetic grid that already starts at the map's own row 0, e.g. tests.
 
-    Trailing all-blank rows are dropped before picking mid_r -- the tmux
-    pane is taller than NetHack's own ~21-row playfield, so the tail of
-    `map_lines` is dead terminal padding, not unexplored level; splitting
-    on the raw row count put the N/S boundary inside that padding, so the
-    S bucket read 0% regardless of what the level actually contained."""
-    rows = [r for r in map_lines if not tm.is_status_line(r)]
-    while rows and not rows[-1].strip():
-        rows.pop()
-    if not rows:
-        return {d: 0.0 for d in "NSEW"}
-    mid_r = len(rows) // 2
-    mid_c = max((len(r) for r in rows), default=0) // 2
+    Terminal padding past the real playfield (the tmux pane is taller than
+    NetHack's own 21-row map) is excluded by construction -- exactly
+    NETHACK_ROWNO rows are read starting at row_offset, nothing beyond."""
+    body = map_lines[row_offset:row_offset + NETHACK_ROWNO]
+    mid_r = NETHACK_ROWNO // 2
+    mid_c = NETHACK_COLNO // 2
     seen = {"N": 0, "S": 0, "E": 0, "W": 0}
-    total = {"N": 0, "S": 0, "E": 0, "W": 0}
-    for r, row in enumerate(rows):
+    total = {
+        "N": mid_r * NETHACK_COLNO,
+        "S": (NETHACK_ROWNO - mid_r - 1) * NETHACK_COLNO,
+        "W": NETHACK_ROWNO * mid_c,
+        "E": NETHACK_ROWNO * (NETHACK_COLNO - mid_c - 1),
+    }
+    for r, row in enumerate(body):
+        if tm.is_status_line(row):
+            continue
         ns = "N" if r < mid_r else "S" if r > mid_r else None
-        for c, cell in enumerate(row):
+        for c in range(NETHACK_COLNO):
+            cell = row[c] if c < len(row) else " "
             ew = "W" if c < mid_c else "E" if c > mid_c else None
-            for d in (ns, ew):
-                if d is None:
-                    continue
-                total[d] += 1
-                if cell != " ":
-                    seen[d] += 1
+            if cell == " ":
+                continue
+            if ns:
+                seen[ns] += 1
+            if ew:
+                seen[ew] += 1
     return {d: (seen[d] / total[d] if total[d] else 0.0) for d in seen}
 
 
@@ -616,13 +645,18 @@ def render_html(map_lines, colors, title="", pos=None, prev_lines=None, dlvl=Non
     # see frontier_scan.py's CLI for why (same conflation-across-branches
     # bug, same fix).
     t_range = tl.current_visit_t_range(dlvl) if dlvl is not None else None
-    turns = sum(tl.subgoal_breakdown(dlvl=dlvl, t_range=t_range).values())
-    coverage = f"coverage: {pct:.0%} ({coverage_band(pct)}), turns on this level: {turns}"
+    subgoals = tl.subgoal_breakdown(dlvl=dlvl, t_range=t_range)
+    turns = sum(subgoals.values())
+    movement_pct = subgoals.get("movement", 0) / turns if turns else 0.0
+    coverage = (
+        f"coverage: {pct:.0%} ({coverage_band(pct)}), "
+        f"turns on this level: {turns} ({movement_pct:.0%} movement)"
+    )
     if pos:
-        dc = directional_coverage(map_lines)
-        lowest = min(dc, key=dc.get)
+        dc = directional_coverage(map_lines, row_offset=1)
+        ranked = sorted(dc, key=dc.get)  # least explored first
         by_dir = " ".join(f"{d}={dc[d]:.0%}" for d in ("N", "S", "E", "W"))
-        coverage += f"<br>by direction: {by_dir} -- least explored: {lowest}"
+        coverage += f"<br>by direction: {by_dir} -- least explored: {','.join(ranked)}"
     return (
         "<!doctype html>\n<html>\n<head>\n"
         '<meta charset="utf-8">\n'
@@ -771,9 +805,12 @@ def _demo():
     assert is_passable(item_in_room, 0, 0, None)  # sanity: '.' still passable
     assert is_passable(item_in_room, 1, 2, None)  # non-door '+' is walkable floor
     assert not is_passable(real_door_room, 0, 2, None)  # real door blocks passage
-    assert map_coverage(["--", "  "]) == 0.5
-    assert coverage_band(0.46) == "high"
-    assert coverage_band(0.50) == "max"
+    # Denominator is NetHack's fixed playfield (MAP_CELLS), not the size
+    # of whatever was passed in.
+    assert map_coverage(["--", "  "]) == 2 / MAP_CELLS
+    assert coverage_band(0.04) == "sparse"
+    assert coverage_band(0.32) == "high"
+    assert coverage_band(0.40) == "max"
     assert attempt_suffix("turn_log_003.jsonl") == "_003"
     assert attempt_suffix("") == ""
     assert format_new([]) == "none"

@@ -141,6 +141,19 @@ if [ "$#" -gt 0 ]; then
     sleep "$KEY_DELAY"
 fi
 
+# A ">" keystroke descends immediately -- warning after it's already been
+# sent (same call) is too late to change anything. Gate it instead: refuse
+# to send '>' at all unless the caller has just set this env var, so the
+# checklist has to happen as a conscious step before the descend call, not
+# a warning alongside or after it. Caller discipline alone hasn't held
+# (recurring gap, confirmed again this session).
+for arg in "$@"; do
+    if [ "$arg" = ">" ] && [ "$NETHACK_CHECKLIST_DONE" != "1" ]; then
+        echo "[run] refusing to send '>': run the pre-descent checklist (SKILL.md 'Before descending'), then retry with NETHACK_CHECKLIST_DONE=1 ./run ... '>'" >&2
+        exit 1
+    fi
+done
+
 # Loop through each argument provided to the script.
 # This allows us to send them one by one with a delay in between.
 for arg in "$@"; do
@@ -164,5 +177,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT=$(tmux capture-pane -p -t "$SESSION_NAME" | python3 "$SCRIPT_DIR/helper/cursor_probe.py" "$SESSION_NAME")
 echo "$OUTPUT"
 # Auto-log this turn (skips no-op/invalid calls itself, see turn_log.py).
-# Silenced: a logging failure must never surface as a game-state error.
-python3 "$SCRIPT_DIR/helper/turn_log.py" "$*" "$OUTPUT" > /dev/null 2>&1
+# stderr stays silenced: a logging failure must never surface as a
+# game-state error. stdout is captured (not discarded) because turn_log.py
+# deliberately prints exactly one line, and only for protocol_violation --
+# surfacing that immediately catches a wasted batch (T: unchanged) the
+# same turn it happens, instead of only showing up later via --breakdown.
+LOG_NOTE=$(python3 "$SCRIPT_DIR/helper/turn_log.py" "$*" "$OUTPUT" 2>/dev/null)
+# `|| true`: this is the script's last command, so a bare `[ -n ... ] &&
+# echo` would leak its own false exit status (no violation this turn) as
+# the whole script's exit code -- confirmed this session, every ordinary
+# ./run call started returning exit 1 the moment this check was added.
+[ -n "$LOG_NOTE" ] && echo "$LOG_NOTE" >&2
+true
