@@ -21,6 +21,118 @@ leave a level — see "Before descending" below.
 
 Why: see memory entries `nethack_navigation_travel` and `nethack_stuck_input_diagnosis`.
 
+## Checklist (authoritative)
+
+This table is the single source of truth for "what to do when." Every row
+maps a trigger straight to a required action; the numbered sections below
+are the *why* and the detailed how-to for each one — don't re-derive a rule
+from prose when it's already a row here, and don't add a new prose section
+for something that's just a new row. Section numbers below are stable and
+referenced by name elsewhere (CLAUDE.md, memory files) — this table points
+at them rather than duplicating their text.
+
+**Enforcement is not a formality — read it honestly.** Only `Mechanical`
+rows are actually guaranteed regardless of whether this table gets
+consulted in the moment; `run` refuses the call outright. Every `Soft` or
+`Discipline` row is exactly the failure mode that has already cost a
+character death this project (a documented rule, not consulted when it
+mattered) — being written down here doesn't make it enforced. Filter by
+`Category` to pull up just the rows relevant to the current situation
+(e.g. mid-combat: scan `Combat` only) instead of re-reading the whole table.
+
+| Category | Trigger | Required action | Section | Enforcement |
+|---|---|---|---|---|
+| Setup | Starting a new game (`--init`) | Confirm role/race/alignment came out right; reroll until St/Dx/Co all clear their medians simultaneously; never send reroll-menu keys through `./run` | "Character creation" | Discipline |
+| Navigation | Before any move | Check `far:` for the intended direction; cap unverified batches at 3 | Procedure 2 | Discipline |
+| Navigation | After any move | Check `new:` first (perishable), then `frontier:`, then `frontier_scan.py` | Procedure 3 | Discipline |
+| Navigation | After any `/,m`, `/,o`, `_`, `#terrain` call | Verify the frame actually changed before continuing | Procedure 4 | Discipline |
+| Combat | Dead-end-looking tile | Check for a monster glyph sitting on it before concluding wall | Procedure 5 | Discipline |
+| Combat | Mold/lichen/acid blob adjacent | Don't melee by default — route around or use ranged | Procedure 5 | Discipline |
+| Combat | Floating eye (`e`) adjacent | Never melee, no exceptions | Procedure 5 | Discipline |
+| Navigation | Room perimeter walk | Check every wall tile (not just corners) for 3 anomaly types | Procedure 6 | Discipline |
+| Navigation | A 10x search concludes empty | Check the `frontier:`/`(closed door)` line printed that same turn | Procedure 6 | Discipline |
+| Navigation | Leaving any room/area | Run the room-exit checklist (coverage, frontier, perimeter, doors, loot) | Procedure 6 table | Discipline |
+| Loot | Kill message / dropped-item glyph | Loot event — check it that turn, not deferred | Procedure 6 | Discipline |
+| Loot | Weapon/armor pickup | Equip-decision moment — compare and wield/wear or explicitly decline, same turn | Procedure 6 | Discipline |
+| Loot | Unidentified wand pickup | Engrave-test it (`E` + letter) the same turn, only when no hostile is adjacent | Procedure 6 | Discipline |
+| Loot | Container (chest/box `(`) found | `#loot`/`#force` it on the ground — don't pick it up first | Procedure 6 | Discipline |
+| Loot | Fountain (`{`) discovered | Check inventory for a long sword before deciding to `#dip` (Excalibur chance — lawful, level 5+, long sword only) | CLAUDE.md Map Symbols | Discipline |
+| Navigation | Using `_` (travel) | Confirm `.` only on an explored/reachable tile; `Space`/`Escape` otherwise | Procedure 7 | Discipline |
+| Navigation | Local box fully enclosed | `#terrain a` + `frontier_scan.py` before blind searching | "Fastest way to reach a target" rung 5 | Discipline |
+| Navigation | No travel path at all | Check `far:`/`paths:` for real rock vs. merely unrevealed ground first | "Fastest way to reach a target" rung 6 | Discipline |
+| Navigation | Boulder blocking route | Push from every angle, then wand/pick-axe/drop-everything, in that order | "Fastest way to reach a target" rung 6 | Discipline |
+| Combat | Monster whose hostility is unclear | `/,m` it before moving toward/into it | Threat ladder rung 1 | Discipline |
+| Combat | Heavy hitter or stealer in view, not yet adjacent | Fire/throw before it closes to melee | Threat ladder rung 2 | Discipline |
+| Combat | Hostile adjacent, known alive nearby, or has attacked this exchange | Never batch multiple turns — 1 action per call until resolved | Threat ladder rung 3 | Discipline |
+| Combat | Rest (`.`) or search (`s`) batch | Capped at 3 per call, 3 cumulative since the last `/,m` | Threat ladder rung 3 | **Mechanical** (`run`) |
+| Combat | A hostile was alive as of the last `/,m` | Rest/search refused outright until a fresh `/,m` comes back clean | Threat ladder rung 3 | **Mechanical** (`run`) |
+| Combat | HP critical, hostile adjacent, retreat won't open distance (same/higher speed monster) | Engrave Elbereth (`E` `-`) before trading more blows — check exceptions (humans, minotaurs, etc. ignore it) | Threat ladder rung 4 | Discipline |
+| Combat | HP critical, hostile still adjacent and disengage is still possible | Disengage (retreat, stairs, or Elbereth) first — `#pray` doesn't cancel the attacker's current turn | Threat ladder rung 4 | Discipline |
+| Combat | HP critical, truly no other option left | `#pray` (last resort, not a routine tactic) | Threat ladder rung 4 | Discipline |
+| Loot | Peaceful `@` in a room full of stacked item glyphs | That's a shop — run the shop checklist (hostility, rations, necessities, prices) | "Entering a shop" | Discipline |
+| Descent | On Dlvl 1 or 2 | Treat the pre-descent checklist and room-exit checklist as mandatory, not optional, before leaving — these are the lowest-risk levels to explore thoroughly (weakest monsters), so bias toward full equipment/necessity gathering here rather than rushing to depth. No new steps: same checklists as every other level, just don't skip or shortcut them on these two | "Before descending"; Procedure 6 | Discipline |
+| Descent | About to press `>` | Pre-descent checklist, in full, run last before the press | "Before descending" | **Soft** (`NETHACK_CHECKLIST_DONE`) |
+| Death | Character dies | Capture the fatal sequence, classify process-gap vs. coverage-gap, 5 whys, ponytail the fix | "Upon death" | Discipline |
+| Descent | Arriving on a new level after `>`/`<` | Check `^X` before assuming Mines vs. main dungeon | "After descending" | Discipline |
+| Descent | Level fully explored, no `>` anywhere | Confirm via `#terrain`, climb to the branch point, `^X` after each climb | "No stairs down anywhere on this level" | Discipline |
+
+## Character creation
+
+`-u name` silently restores a stale save under that name instead of
+creating fresh, regardless of the role/race/align suffix. Confirm role/
+race/alignment actually came out right (`^X` or the status bar) before
+playing. `--init` now deletes any stale save for the character name before
+launching, closing this for good — no need to check manually anymore.
+
+Reroll requires `NETHACKOPTIONS` to include `reroll` (`run`'s
+`NETHACK_OPTIONS_ENV`) — without it, no reroll menu appears at all and the
+game proceeds straight into the intro (confirmed this session: a manual
+test session launched without the env var showed exactly this, and 29
+subsequent `r` presses landed on live gameplay as the `r`/read command
+instead, a silent no-op every time since nothing was in hand to read). With
+the option set, it's a real menu (`p` = start with this character, `r` =
+reroll another), not a one-shot `[yn]` — `r` loops as many times as sent
+within the same launch (confirmed: 30 consecutive genuine rerolls in one
+session), each an independent draw.
+
+**Never send reroll-menu keys through `./run`** — its auto-`Space` corrupts
+the menu into a degraded one-shot `[yn]`, the same failure class as a
+`[yn]` prompt (see CLAUDE.md's Space caveat). Use raw
+`tmux send-keys -t claude-nethack "<key>"` for every key during the menu;
+only switch back to `./run` once past the "Velkommen..." intro line.
+
+Target for a Valkyrie, from an empirical 30-roll sample this session
+(`St`/`Dx`/`Co`/`In`/`Wi`/`Ch` — 18/xx strength counted as `18+xx/100`):
+median St 18 (mean 17.2, range 14-18/06), median Dx 13 (range 10-18),
+median Co 17 (range 12-18), In/Wi/Ch median 8.5/9/9 (all low-variance,
+confirming they barely matter).
+
+**Acceptance bar: St, Dx, and Co must all be at/above their medians
+(18/13/17) simultaneously** — these are the role's three heavily-weighted
+stats (~80% combined, per a 30/20/30 weight split), so all three, not any
+two, is the deliberate bar. This is materially stricter than clearing any
+single stat's median: if each is roughly independent, expect on the order
+of 8 reroll attempts (not 2-3) before one clears all three at once. In/Wi/
+Ch just need to stay near their own medians — don't actively optimize
+them, only avoid a low outlier.
+
+**AC and HP are both fixed constants for this exact starting kit, not
+distributions — don't reroll chasing either, there is nothing to select
+on.** HP is fixed at 16(16) for a level-1 human Valkyrie regardless of
+Constitution (32/32 observations, zero variance; Constitution's bonus/
+penalty only applies to HP gained on *future* level-ups, per nethackwiki).
+AC is fixed at 6 (32/32 independent launches once measured correctly, zero
+variance) — matches nethackwiki's own worked example for a starting
+Valkyrie's `+3 small shield`. An earlier reading of "AC:0" was a
+capture-timing artifact: reading the status bar *before* dismissing the
+"Velkommen..." `--More--` shows a provisional pre-equip AC, not the real
+one — dismiss with `Space` first, then read AC. Dexterity has no effect on
+AC in vanilla NetHack (confirmed via nethackwiki, correcting an earlier
+wrong assumption this session). Since AC can't be improved by rerolling,
+the actual lever for it is the "Weapon/armor pickup" checklist row — an
+in-game gear find (confirmed this session: AC:6->0 from a banded mail
+pickup).
+
 ## Procedure
 
 1. **Know where you are before moving.** Use the last `./run` output's
@@ -395,7 +507,23 @@ Read top to bottom — stop at the first rung that applies.
    still close the distance within a single multi-turn batch, so this
    applies doubly to resting/waiting to regen HP: cap each batch to 3 turns
    and check `/,m` before continuing, even when nothing is known nearby.
-4. **Last resort at critical HP: `#pray`** (confirm the `[yn]` prompt with
+4. **Before `#pray`: Elbereth, if disengage-by-distance won't work.**
+   Walking away only creates distance against a monster slower than the
+   player's base speed (12) — same-speed monsters (many are) stay exactly
+   adjacent step for step, so "just retreat" silently fails against them
+   with no error or warning (see nethackwiki `Speed`, saved at
+   `docs/wiki/Elbereth.md`'s research trail). When retreat won't open
+   distance and stairs aren't reachable this turn, engrave Elbereth (`E`,
+   then `-` for fingers, fastest option) before trading more blows — most
+   monsters that can see it won't melee-attack while adjacent to it,
+   buying a turn to heal or reposition. It is not universal: humans/elves
+   (`@`), minotaurs, Riders, shopkeepers, guards, priests, and unique
+   monsters ignore it outright, blinded monsters can't read it, and it
+   gives no protection against ranged/spell/breath attacks. Standing on it
+   and attacking erases it and costs alignment — use it to stop being hit,
+   not as a base to fight from. See `docs/wiki/Elbereth.md` for the full
+   durability/exceptions detail.
+   **Last resort at critical HP: `#pray`** (confirm the `[yn]` prompt with
    `y`). Can trigger full HP restoration via divine intervention (confirmed
    once: deity Tyr, HP 1->53). Legitimate emergency action, not a routine
    tactic — prayers can be refused if overused or if alignment/luck is poor.
@@ -407,8 +535,8 @@ Read top to bottom — stop at the first rung that applies.
    much better" would have printed. Pray *before* HP is merely critical if
    the attacker is still adjacent and un-fled, not at the last possible
    HP margin — treat #pray like any other single action against an
-   adjacent hostile: it does not substitute for disengaging first when
-   disengaging is still possible.
+   adjacent hostile: it does not substitute for disengaging (or Elbereth)
+   first when either is still possible.
 
 ## Entering a shop
 

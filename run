@@ -10,8 +10,16 @@ SESSION_NAME="claude-nethack"
 # viewer with a different terminal width attaches.
 SESSION_WIDTH=154
 SESSION_HEIGHT=60
-NETHACK_OPTIONS_ENV="NETHACKOPTIONS=whatis_coord:m,time"
-NETHACK_COMMAND="nethack -u Claude -p valkyrie -r human"
+NETHACK_OPTIONS_ENV="NETHACKOPTIONS=whatis_coord:m,time,reroll"
+# The old "-u Claude -p valkyrie -r human" form left gender/alignment
+# unspecified, and the game silently resolves those without ever showing an
+# interactive prompt (confirmed this session: two separate --init runs both
+# landed on Neutral with no character-creation prompt visible in either
+# capture) -- CLAUDE.md's "pick v/h/l/y" flow assumes a menu that never
+# actually appears when role+race are pre-specified this way. The -u
+# suffix form pins every field explicitly instead of leaving any gap for
+# the game to fill in randomly.
+NETHACK_COMMAND="nethack -u Claude-Val-Hum-Fem-Law"
 KEY_DELAY=0.3
 
 # Send input by pasting a buffer into the pane instead of send-keys:
@@ -96,9 +104,30 @@ if [ "$1" = "--cleanup" ]; then
 fi
 
 # Add session cleanup option
+IS_INIT=0
 if [ "$1" = "--init" ]; then
+    IS_INIT=1
     tmux kill-session -t "$SESSION_NAME" 2>/dev/null
     sleep 0.2
+    # --init's own docstring says "start fresh game", but killing the tmux
+    # session never touches nethack's own save -- `nethack -u name` silently
+    # RESTORES an existing save for that name instead of creating a new
+    # character, regardless of any role/race/align flags (confirmed this
+    # session: this is exactly how a stale Neutral-alignment save kept
+    # getting resumed instead of a fresh Lawful one being created, with no
+    # error or prompt indicating a restore had happened). Delete any save
+    # for this character before launching, every time, so --init actually
+    # means what its own docstring says -- no flag to remember, since there
+    # is no legitimate reason to want --init to preserve old save state (a
+    # kill-session alone, without --init, already doesn't destroy the
+    # nethack-side checkpoint if resuming was ever wanted instead).
+    CHAR_NAME="${NETHACK_COMMAND#*-u }"
+    CHAR_NAME="${CHAR_NAME%%[- ]*}"
+    NETHACK_BIN="$(which nethack 2>/dev/null)"
+    if [ -n "$NETHACK_BIN" ] && [ -n "$CHAR_NAME" ]; then
+        SAVE_DIR="$(dirname "$NETHACK_BIN")/../share/nethack/save"
+        find "$SAVE_DIR" -iname "*${CHAR_NAME}*" -delete 2>/dev/null
+    fi
     # Name this game's turn log by attempt number (zero-padded so filenames
     # sort correctly past 9 attempts) and record it as the active log so
     # turn_log.py doesn't need the path passed in on every call.
@@ -120,8 +149,18 @@ if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     tmux set-option -t "$SESSION_NAME" window-size manual
     sleep 1 # Give nethack time to load
 
-    # needs this when resuming the game
-    send_input Space
+    # Only needed to dismiss a "Restore this game? [yn]" prompt when a
+    # fresh tmux session attaches to an existing save (e.g. the tmux server
+    # itself was restarted outside of --init/--cleanup). --init now always
+    # deletes any stale save first, so there is nothing to dismiss on that
+    # path -- sending it anyway was actively harmful there, not just
+    # redundant: confirmed this session, it was corrupting the reroll
+    # menu's first screen (showing a stray "Reroll this character? [yn]"
+    # instead of the real "p - start / r - reroll" menu, silently
+    # collapsing what should be a repeatable reroll loop into a one-shot).
+    if [ "$IS_INIT" -eq 0 ]; then
+        send_input Space
+    fi
 fi
 
 # --- Action and State Capture ---
@@ -154,6 +193,59 @@ for arg in "$@"; do
     fi
 done
 
+# SKILL.md rule 3 says cap rest ('.') and search ('s') batches to 3 turns
+# and re-check /,m before continuing, because a melee monster that isn't
+# adjacent yet can still close the distance mid-batch -- but that rule was
+# prose only, and prose alone didn't hold: this same "not adjacent, so a
+# longer batch is fine" reasoning killed Claude to a rothe (a 19-rep rest
+# batch closed HP 39->0 with no check in between). A per-call cap alone only
+# blocks the oversized single call -- it says what not to send but doesn't
+# make the actual right action (looking for monsters) happen, so three
+# separate 3-turn calls in a row with no monster check in between would
+# still slip through. Track a cumulative streak across calls instead, and
+# require an explicit '/ m' (look at monsters) call to reset it -- that's
+# the positive action rule 3 actually asks for, made mechanical instead of
+# just implied by a refusal message.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+STREAK_FILE="$SCRIPT_DIR/game_state/.rest_search_streak"
+HOSTILE_FILE="$SCRIPT_DIR/game_state/.hostile_known"
+mkdir -p "$(dirname "$STREAK_FILE")"
+STREAK=$(cat "$STREAK_FILE" 2>/dev/null || echo 0)
+[[ "$STREAK" =~ ^[0-9]+$ ]] || STREAK=0
+DOT_COUNT=0
+S_COUNT=0
+for arg in "$@"; do
+    [ "$arg" = "." ] && DOT_COUNT=$((DOT_COUNT + 1))
+    [ "$arg" = "s" ] && S_COUNT=$((S_COUNT + 1))
+done
+CALL_TOTAL=$((DOT_COUNT + S_COUNT))
+if [ "$DOT_COUNT" -gt 3 ] || [ "$S_COUNT" -gt 3 ]; then
+    echo "[run] refusing: more than 3 rest/search turns in one call. A non-adjacent melee monster can still close the gap mid-batch -- send at most 3, check /,m, repeat." >&2
+    exit 1
+fi
+# A streak cap only forces looking, not resolving -- three separate
+# looks that each still show the same hostile would still let resting
+# continue between them. Block rest/search outright whenever the last
+# '/ m' saw a hostile still alive; it only clears on a fresh '/ m' that
+# comes back clean (killed, fled, or genuinely never adjacent), which is
+# the actual preventive action ("deal with it"), not just "check for it".
+if [ "$CALL_TOTAL" -gt 0 ] && [ -s "$HOSTILE_FILE" ] && [ "$(cat "$HOSTILE_FILE")" = "1" ]; then
+    echo "[run] refusing: a hostile monster was still alive as of the last '/ m' check. Fight it, flee it, or otherwise resolve it, then run ./run '/' m to confirm clear before resting/searching." >&2
+    exit 1
+fi
+if [ "$#" -eq 2 ] && [ "$1" = "/" ] && [ "$2" = "m" ]; then
+    echo 0 > "$STREAK_FILE"
+elif [ "$CALL_TOTAL" -gt 0 ]; then
+    NEW_STREAK=$((STREAK + CALL_TOTAL))
+    if [ "$NEW_STREAK" -gt 3 ]; then
+        echo "[run] refusing: $STREAK rest/search turns already sent since the last monster check. Run ./run '/' m to look for threats before resting/searching more." >&2
+        exit 1
+    fi
+    echo "$NEW_STREAK" > "$STREAK_FILE"
+elif [ "$#" -gt 0 ]; then
+    echo 0 > "$STREAK_FILE"
+fi
+
 # Loop through each argument provided to the script.
 # This allows us to send them one by one with a delay in between.
 for arg in "$@"; do
@@ -173,9 +265,24 @@ done
 sleep 0.2
 
 # Capture the pane's content and format it for LLM consumption.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT=$(tmux capture-pane -p -t "$SESSION_NAME" | python3 "$SCRIPT_DIR/helper/cursor_probe.py" "$SESSION_NAME")
 echo "$OUTPUT"
+
+# Update the hostile-known flag from this call's own output whenever it was
+# a '/ m' (look at monsters) call -- the gate above reads this file to
+# decide whether rest/search is allowed at all, not just capped. A monster
+# line is anyone shown except the player ("called Claude") and anyone
+# explicitly "peaceful". The line-start anchor matters: the listing's own
+# header ("Monsters currently shown near <19,8>:") contains a coordinate
+# too and would otherwise count itself as a monster on an all-clear result.
+if [ "$#" -eq 2 ] && [ "$1" = "/" ] && [ "$2" = "m" ]; then
+    NONPLAYER=$(echo "$OUTPUT" | grep -E '^ *<[0-9]+,[0-9]+>' | grep -v "called Claude")
+    if [ -n "$NONPLAYER" ] && echo "$NONPLAYER" | grep -qvi "peaceful"; then
+        echo 1 > "$HOSTILE_FILE"
+    else
+        echo 0 > "$HOSTILE_FILE"
+    fi
+fi
 # Auto-log this turn (skips no-op/invalid calls itself, see turn_log.py).
 # stderr stays silenced: a logging failure must never surface as a
 # game-state error. stdout is captured (not discarded) because turn_log.py

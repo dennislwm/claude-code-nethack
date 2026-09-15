@@ -15,9 +15,22 @@ Explore the dungeon, descend levels, survive. Current goal: reach Dungeon Level 
   `d` — this leaves the session and game running. Only `--cleanup` (or
   `tmux kill-session -t claude-nethack`) actually ends the game.
 
-During `--init`, you must manually select the character:
-pick `v` (Valkyrie), `h` (human), `l` (lawful), `y` (confirm).
-The `-p valkyrie` flag in the script does NOT work reliably.
+`--init` creates the character non-interactively via `run`'s
+`NETHACK_COMMAND` (`nethack -u Claude-Val-Hum-Fem-Law`) — no manual
+selection keys needed; the game never shows an interactive role/race/
+alignment menu when the `-u` name-suffix form is used, so sending `v h l y`
+does nothing useful (they'd be read as ordinary game keys instead).
+If `--init` ever produces the wrong role/alignment (or a "welcome **back**"
+message instead of "welcome to NetHack"), suspect a stale save for
+character name "Claude" first, not the flag: `nethack -u name` silently
+*restores* any existing save for that name instead of creating a new
+character, regardless of the role/race/alignment suffix — check
+`find "$(dirname "$(which nethack)")/../share/nethack/save" -iname '*Claude*'`
+(or wherever this install's `nethack` shares saves) and delete a stale one
+before retrying. Confirmed this session: two consecutive `--init` runs both
+silently resumed the same stale Neutral-alignment T:1 save instead of
+creating a fresh Lawful character, with no error or prompt indicating a
+restore had happened.
 
 ### Output Format
 `./run` prints two things when the game map is visible:
@@ -96,6 +109,15 @@ movement keys until you close it with `Space` or `Escape`.
   action that opens a `[yn]` prompt (`S`, `#force`, some `#loot`/kick
   flows) must send its answer in the **same** `./run` call as the
   triggering key (e.g. `./run S y`), never a follow-up call.
+  **The character-creation reroll menu (`NETHACKOPTIONS=reroll`, `--init`)
+  is a second exception, not just `[yn]` prompts** — sending `p`/`r`/`n`
+  through `./run` (any real key, since it always auto-`Space`s first)
+  corrupts the menu into a degraded one-shot `[yn]` prompt instead of the
+  real repeatable "p - start / r - reroll" menu. Confirmed this session:
+  `./run p` to accept a roll produced exactly this collapse. Use raw
+  `tmux send-keys -t claude-nethack "<key>"` for every key during the
+  reroll menu instead of `./run` — only switch back to `./run` once the
+  game has actually started (the "Velkommen..." intro line has appeared).
 - `Escape` — cancel a command (fails with "client is read-only" if a
   read-only tmux viewer is attached — use the next real action instead,
   which dismisses via the automatic `Space` above)
@@ -196,3 +218,4 @@ below) before fetching the live page from nethackwiki.com.
 - [Valkyrie](https://nethackwiki.com/wiki/Valkyrie) — role-specific early strategy
 - [Standard strategy](https://nethackwiki.com/wiki/Standard_strategy) / [Why do I keep dying?](https://nethackwiki.com/wiki/Why_do_I_keep_dying) — general early-game survival
 - [Identification](https://nethackwiki.com/wiki/Identification) — engrave-testing, BUC-testing, price-ID
+- [Elbereth](https://nethackwiki.com/wiki/Elbereth) — engraving to make most monsters flee; who ignores it, what erases it
